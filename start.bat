@@ -20,11 +20,6 @@ if errorlevel 1 (
 if not exist config.json (
     echo Keine config.json gefunden, kopiere config.example.json...
     copy config.example.json config.json >nul
-    echo.
-    echo Bitte trage in config.json die MAC-Adresse deines TP357S ein
-    echo und starte start.bat danach erneut.
-    pause
-    exit /b
 )
 
 python start.py

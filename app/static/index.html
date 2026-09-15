@@ -32,9 +32,16 @@
 <section>
   <h2>BLE-Scan</h2>
   <div class="row">
-    <label>Dauer (Sek.): <input id="scan-duration" type="number" value="8" min="2" max="60" /></label>
+    <label>Dauer (Sek.): <input id="scan-duration" type="number" value="15" min="2" max="60" /></label>
     <button id="scan-btn">Scan starten</button>
     <span id="scan-status"></span>
+  </div>
+  <div class="row">
+    <label>MAC direkt: <input id="manual-mac" type="text" placeholder="AA:BB:CC:DD:EE:FF" size="18" /></label>
+    <label>Name: <input id="manual-name" type="text" placeholder="TP357S Keller" size="16" /></label>
+    <button id="manual-add-btn">Hinzufügen</button>
+    <button id="manual-probe-btn">Live-Test</button>
+    <span class="small">(falls der Scan das Gerät nicht findet, MAC hier direkt eintragen)</span>
   </div>
   <table id="scan-table">
     <thead>

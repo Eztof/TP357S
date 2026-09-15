@@ -8,11 +8,28 @@ BLE-Threads. Nichts soll still verschwinden.
 import asyncio
 import logging
 import logging.handlers
+import re
 import sys
 import threading
 from pathlib import Path
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(threadName)s %(name)s: %(message)s"
+
+# Das Dashboard pollt diese Endpunkte alle paar Sekunden selbst (Status,
+# Debug-Panel, Log-Fenster). Deren 200er-Zugriffs-Log wuerde das Logfile
+# ausschliesslich mit sich selbst fluten (jedes Log-Poll erzeugt eine
+# Logzeile, die beim naechsten Poll wieder mitgeloggt wird). Echte Fehler
+# (Status != 200) und alle anderen Routen (Scan starten, Geraet
+# hinzufuegen, Verlauf abrufen, ...) bleiben normal sichtbar.
+_NOISY_POLL_PATTERN = re.compile(
+    r'"GET (?:/api/status|/api/config|/api/debug|/api/logs(?:\?[^"\s]*)?'
+    r'|/api/devices/[^"\s/]+/(?:live|history|log)(?:\?[^"\s]*)?) HTTP/[^"]+"\s+200'
+)
+
+
+class _NoisyPollFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return _NOISY_POLL_PATTERN.search(record.getMessage()) is None
 
 
 def setup_logging(log_path: Path, level: str = "DEBUG", max_bytes: int = 5_000_000, backup_count: int = 5) -> None:
@@ -32,6 +49,10 @@ def setup_logging(log_path: Path, level: str = "DEBUG", max_bytes: int = 5_000_0
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
     root.addHandler(console_handler)
+
+    # Nur die reinen Status-Polling-GETs rausfiltern - alles andere (inkl.
+    # Fehler-Statuscodes) bleibt wie gewohnt sichtbar.
+    logging.getLogger("werkzeug").addFilter(_NoisyPollFilter())
 
     _install_crash_hooks()
 

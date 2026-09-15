@@ -1,7 +1,7 @@
 {
   "history_record_interval_seconds": 60,
   "reconnect_delay_seconds": 10,
-  "scan_duration_seconds": 8,
+  "scan_duration_seconds": 15,
   "web_host": "127.0.0.1",
   "web_port": 5000,
   "db_path": "data/tp357s.db",

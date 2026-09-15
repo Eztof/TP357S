@@ -13,10 +13,6 @@ pip install -q -r requirements.txt
 if [ ! -f config.json ]; then
     echo "Keine config.json gefunden, kopiere config.example.json..."
     cp config.example.json config.json
-    echo
-    echo "Bitte trage in config.json die MAC-Adresse deines TP357S ein"
-    echo "und starte ./start.sh danach erneut."
-    exit 0
 fi
 
 python start.py

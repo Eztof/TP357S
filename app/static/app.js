@@ -10,6 +10,10 @@ const scanBtn = document.getElementById("scan-btn");
 const scanDurationInput = document.getElementById("scan-duration");
 const scanStatusEl = document.getElementById("scan-status");
 const scanBody = document.getElementById("scan-body");
+const manualMacInput = document.getElementById("manual-mac");
+const manualNameInput = document.getElementById("manual-name");
+const manualAddBtn = document.getElementById("manual-add-btn");
+const manualProbeBtn = document.getElementById("manual-probe-btn");
 
 const deviceBody = document.getElementById("device-body");
 const deviceLogsEl = document.getElementById("device-logs");
@@ -89,7 +93,7 @@ async function refreshLog() {
 // -- Scan ---------------------------------------------------------------------
 
 scanBtn.addEventListener("click", async () => {
-  const duration = parseInt(scanDurationInput.value, 10) || 8;
+  const duration = parseInt(scanDurationInput.value, 10) || 15;
   scanBtn.disabled = true;
   try {
     await fetchJSON(`/api/scan?duration=${duration}`, { method: "POST" });
@@ -97,6 +101,24 @@ scanBtn.addEventListener("click", async () => {
     alert("Scan konnte nicht gestartet werden: " + e.message);
     scanBtn.disabled = false;
   }
+});
+
+manualAddBtn.addEventListener("click", () => {
+  const mac = manualMacInput.value.trim();
+  if (!mac) {
+    alert("Bitte MAC-Adresse eintragen.");
+    return;
+  }
+  addDevice(mac, manualNameInput.value.trim() || mac);
+});
+
+manualProbeBtn.addEventListener("click", () => {
+  const mac = manualMacInput.value.trim();
+  if (!mac) {
+    alert("Bitte MAC-Adresse eintragen.");
+    return;
+  }
+  startProbe(mac, manualNameInput.value.trim() || mac);
 });
 
 function fmtObj(obj) {
@@ -416,6 +438,6 @@ refreshDebug();
 refreshLog();
 
 setInterval(refreshAll, 2000);
-setInterval(refreshDebug, 3000);
-setInterval(refreshLog, 2000);
+setInterval(refreshDebug, 5000);
+setInterval(refreshLog, 4000);
 setInterval(refreshHistory, 15000);

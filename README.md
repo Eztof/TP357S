@@ -51,40 +51,45 @@ TP357S/
 **Windows:** Doppelklick auf `start.bat`.
 **Linux/macOS:** `./start.sh` im Terminal ausführen.
 
+Ein einziger Durchlauf genügt: venv anlegen (falls nötig), Abhängigkeiten
+installieren, `config.json` aus `config.example.json` erzeugen (falls
+nötig) und direkt die App starten — kein manuelles Eintragen einer
+MAC-Adresse mehr nötig, also auch kein zweiter Durchlauf.
+
 `start.py` selbst bitte nicht direkt per Doppelklick starten — es enthält
 keine Installationslogik und benötigt die vorher von `start.bat`/`start.sh`
-angelegte virtuelle Umgebung mit installierten Abhängigkeiten.
-`start.sh` ist ein Bash-Skript und funktioniert unter Windows nicht (kein
-Fehler, es passiert dort einfach nichts).
+angelegte virtuelle Umgebung mit installierten Abhängigkeiten. `start.sh`
+ist ein Bash-Skript und funktioniert unter Windows nicht (kein Fehler, es
+passiert dort einfach nichts).
 
-Falls `start.bat` beim ersten Versuch mit einem Fehler bei der Installation
-von `bleak` abbricht: erst den (dann unvollständigen) `venv`-Ordner löschen
-und `start.bat` erneut ausführen — das Fehlschlagen der Installation wird
-jetzt außerdem klar erkannt und die App startet nicht mehr mit fehlenden
-Abhängigkeiten.
+Falls `start.bat` mit einem Fehler bei der Installation von `bleak`
+abbricht: erst den (dann unvollständigen) `venv`-Ordner löschen und
+`start.bat` erneut ausführen — Installationsfehler werden erkannt und die
+App startet dann nicht mit fehlenden Abhängigkeiten.
 
-Beim ersten Start wird automatisch eine virtuelle Umgebung angelegt, die
-Abhängigkeiten installiert und `config.json` aus `config.example.json`
-erzeugt. Die Standardwerte darin (Server-Port, Wiederverbindungs-Intervall,
-angenommenes Aufnahmeintervall der Historie …) müssen in der Regel nicht
-angepasst werden — es ist **keine MAC-Adresse mehr manuell einzutragen**.
-
-Danach die Startdatei erneut ausführen. Es öffnet sich automatisch der
-Browser mit dem Dashboard unter `http://127.0.0.1:5000/`.
+Es öffnet sich automatisch der Browser mit dem Dashboard unter
+`http://127.0.0.1:5000/`.
 
 ## Sensoren koppeln
 
-1. Im Dashboard unter „Sensoren suchen“ auf **Nach Sensoren suchen**
-   klicken (Scan läuft standardmäßig 8 Sekunden, einstellbar). Es werden
-   alle in der Nähe gefundenen BLE-Geräte mit Name, MAC-Adresse und
-   Signalstärke aufgelistet.
+1. Im Dashboard unter „BLE-Scan“ auf **Scan starten** klicken (Standard:
+   15 Sekunden, einstellbar). Die Ergebnistabelle zeigt alle gefundenen
+   BLE-Geräte mit sämtlichen Rohdaten aus dem Advertisement.
 2. Beim gewünschten Sensor auf **Hinzufügen** klicken und einen Namen
-   vergeben (z. B. „Wohnzimmer“, „Keller“). Der Sensor erscheint danach
-   unter „Meine Sensoren“ und die App verbindet sich automatisch (inkl.
-   Wiederverbindung, falls die Verbindung abbricht).
-3. Beliebig viele Sensoren parallel koppeln — jeder läuft unabhängig,
-   eigener Live-Wert, eigene Historie, eigenes CSV.
-4. Über die Buttons **Umbenennen** und **Entfernen** an jedem Sensor
+   vergeben. Der Sensor erscheint danach unter „Geräte“ und die App
+   verbindet sich automatisch (inkl. Wiederverbindung, falls die
+   Verbindung abbricht). Mit **Live-Test** lässt sich stattdessen erst
+   nur reinschauen, ohne dauerhaft zu koppeln (siehe unten).
+3. **Findet der Scan den Sensor nicht** (BLE-Advertising ist unzuverlässig
+   — Geräte senden nicht immer durchgehend, manche Stacks verpassen
+   Pakete): im Feld „MAC direkt“ die MAC-Adresse von Hand eintragen (z. B.
+   aus den Windows-Bluetooth-Einstellungen, einer Scanner-App wie nRF
+   Connect auf dem Smartphone, oder `bluetoothctl scan on` unter Linux)
+   und direkt **Hinzufügen** bzw. **Live-Test** klicken — der Scan ist
+   damit nur eine Komfortfunktion, keine Voraussetzung fürs Koppeln.
+4. Beliebig viele Sensoren parallel koppeln — jeder läuft unabhängig,
+   eigener Live-Wert, eigene Historie, eigenes CSV, eigener Rohdaten-Feed.
+5. Über die Buttons **Umbenennen** und **Entfernen** an jedem Sensor
    lässt sich der Name jederzeit ändern bzw. die Kopplung aufheben
    (gespeicherte Messwerte bleiben dabei erhalten).
 

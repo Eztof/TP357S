@@ -270,7 +270,7 @@ class BleManager:
     async def _scan_async(self, duration: int) -> None:
         self.state.set_scanning(True)
         try:
-            found = await BleakScanner.discover(timeout=duration, return_adv=True)
+            found = await BleakScanner.discover(timeout=duration, return_adv=True, scanning_mode="active")
             results = []
             for device, adv in found.values():
                 entry = self._describe_scan_result(device, adv)
