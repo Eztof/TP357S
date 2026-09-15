@@ -10,6 +10,9 @@ from typing import Dict, List, Optional
 class DeviceRecord:
     mac: str
     name: str
+    auto_sync_enabled: bool = False
+    auto_sync_interval_seconds: int = 600
+    last_synced_ts: Optional[str] = None
 
 
 class DeviceStore:
@@ -26,7 +29,13 @@ class DeviceStore:
             raw = json.load(f)
         for item in raw:
             mac = item["mac"].upper()
-            self._devices[mac] = DeviceRecord(mac=mac, name=item.get("name") or mac)
+            self._devices[mac] = DeviceRecord(
+                mac=mac,
+                name=item.get("name") or mac,
+                auto_sync_enabled=bool(item.get("auto_sync_enabled", False)),
+                auto_sync_interval_seconds=int(item.get("auto_sync_interval_seconds", 600)),
+                last_synced_ts=item.get("last_synced_ts"),
+            )
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -69,3 +78,22 @@ class DeviceStore:
             record.name = name
             self._save()
             return record
+
+    def set_auto_sync(self, mac: str, enabled: bool, interval_seconds: int) -> Optional[DeviceRecord]:
+        mac = mac.upper()
+        with self._lock:
+            record = self._devices.get(mac)
+            if not record:
+                return None
+            record.auto_sync_enabled = enabled
+            record.auto_sync_interval_seconds = max(60, interval_seconds)
+            self._save()
+            return record
+
+    def set_last_synced(self, mac: str, ts: Optional[str]) -> None:
+        mac = mac.upper()
+        with self._lock:
+            record = self._devices.get(mac)
+            if record:
+                record.last_synced_ts = ts
+                self._save()

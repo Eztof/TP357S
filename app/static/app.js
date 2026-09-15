@@ -322,6 +322,36 @@ function updateDeviceLogPanels(devices) {
       const header = document.createElement("h4");
       container.appendChild(header);
 
+      let autoSyncRow = null;
+      let autoSyncEnabledInput = null;
+      let autoSyncIntervalInput = null;
+      let autoSyncStatusEl = null;
+      if (!d.is_probe) {
+        autoSyncRow = document.createElement("div");
+        autoSyncRow.className = "row";
+        const label = document.createElement("label");
+        autoSyncEnabledInput = document.createElement("input");
+        autoSyncEnabledInput.type = "checkbox";
+        label.appendChild(autoSyncEnabledInput);
+        label.appendChild(document.createTextNode(" Auto-Sync alle"));
+        autoSyncIntervalInput = document.createElement("input");
+        autoSyncIntervalInput.type = "number";
+        autoSyncIntervalInput.min = "1";
+        autoSyncIntervalInput.size = "4";
+        autoSyncIntervalInput.value = "10";
+        const applyBtn = document.createElement("button");
+        applyBtn.textContent = "Übernehmen";
+        applyBtn.addEventListener("click", () => applyAutoSync(d.mac, autoSyncEnabledInput, autoSyncIntervalInput));
+        autoSyncStatusEl = document.createElement("span");
+        autoSyncStatusEl.className = "small";
+        autoSyncRow.appendChild(label);
+        autoSyncRow.appendChild(autoSyncIntervalInput);
+        autoSyncRow.appendChild(document.createTextNode(" Min."));
+        autoSyncRow.appendChild(applyBtn);
+        autoSyncRow.appendChild(autoSyncStatusEl);
+        container.appendChild(autoSyncRow);
+      }
+
       const writeRow = document.createElement("div");
       writeRow.className = "row";
       const hexInput = document.createElement("input");
@@ -376,12 +406,65 @@ function updateDeviceLogPanels(devices) {
       deviceLogsEl.appendChild(container);
 
       const intervalId = setInterval(() => fetchDeviceLog(d.mac, pre), 2000);
-      entry = { container, header, pre, intervalId };
+      entry = {
+        container,
+        header,
+        pre,
+        intervalId,
+        autoSyncEnabledInput,
+        autoSyncIntervalInput,
+        autoSyncStatusEl,
+        autoSyncInitialized: false,
+      };
       trackedDeviceLogs.set(d.mac, entry);
       fetchDeviceLog(d.mac, pre);
     }
     entry.header.textContent = `${d.name} (${d.mac}) — ${d.status}${d.is_probe ? " [Live-Test]" : ""} — ${d.packet_count} Pakete`;
+
+    if (entry.autoSyncEnabledInput && entry.autoSyncIntervalInput) {
+      const focused = document.activeElement;
+      if (!entry.autoSyncInitialized || (focused !== entry.autoSyncEnabledInput && focused !== entry.autoSyncIntervalInput)) {
+        entry.autoSyncEnabledInput.checked = !!d.auto_sync_enabled;
+        entry.autoSyncIntervalInput.value = Math.round((d.auto_sync_interval_seconds || 600) / 60);
+        entry.autoSyncInitialized = true;
+      }
+    }
+    if (entry.autoSyncStatusEl) {
+      entry.autoSyncStatusEl.textContent = formatAutoSyncStatus(d);
+    }
   });
+}
+
+function formatAutoSyncStatus(d) {
+  const parts = [];
+  parts.push(d.last_synced_ts ? `synced bis ${toLocalTime(d.last_synced_ts)}` : "noch nie synchronisiert");
+  if (d.last_auto_sync_result) {
+    const r = d.last_auto_sync_result;
+    parts.push(
+      r.ok
+        ? `letzter Abruf: ${r.count}/${r.requested} Datensätze (${r.clean ? "sauber" : "ABGEBROCHEN"})`
+        : `letzter Abruf fehlgeschlagen: ${r.error}`
+    );
+  }
+  if (d.last_sync_check) {
+    const c = d.last_sync_check;
+    parts.push(c.ok ? `Sync-Check OK (dT=${c.temp_diff} dH=${c.humidity_diff})` : `Sync-Check ABWEICHUNG (dT=${c.temp_diff} dH=${c.humidity_diff})`);
+  }
+  return parts.join(" · ");
+}
+
+async function applyAutoSync(mac, enabledInput, intervalInput) {
+  const enabled = enabledInput.checked;
+  const interval_minutes = parseFloat(intervalInput.value) || 10;
+  try {
+    await fetchJSON(`/api/devices/${encodeURIComponent(mac)}/auto-sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled, interval_minutes }),
+    });
+  } catch (e) {
+    alert("Auto-Sync konnte nicht gesetzt werden: " + e.message);
+  }
 }
 
 async function fetchDeviceLog(mac, pre) {

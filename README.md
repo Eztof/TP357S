@@ -142,9 +142,12 @@ Nähe kurz ausschalten/aus der Reichweite bringen und erneut scannen.
   „Anzahl Datensätze“ geht bis **65535** (NL/NH im Datenanfrage-Kommando
   sind 16-bit, das ist die tatsächliche Protokoll-Obergrenze, nicht
   willkürlich gesetzt — manche Sensoren können deutlich mehr als ein paar
-  hundert Datensätze intern vorhalten). Das Warte-Timeout auf die Antwort
-  skaliert automatisch mit der angefragten Anzahl (bis zu 10 Minuten bei
-  sehr großen Anfragen) statt fix bei 30s zu liegen.
+  hundert Datensätze intern vorhalten). Auf die Antwort wird **Idle-basiert**
+  gewartet: solange neue Pakete reinkommen, wartet die App weiter; erst wenn
+  20s lang nichts mehr kam (oder eine großzügige, nach Anzahl gestaffelte
+  Gesamt-Obergrenze von 2–30 Minuten erreicht ist), wird abgebrochen. Ein
+  fester Timeout war bei größeren Abrufen über eine reale, ggf. schwache
+  BLE-Verbindung unzuverlässig — die Übertragungsrate ist nicht konstant.
   ⚠️ Wiederholtes Abrufen großer Verläufe kann zu Dopplungen in
   `history_readings` führen: die geschätzten Zeitstempel werden bei jedem
   Abruf neu rückwärts vom jeweils aktuellen Zeitpunkt berechnet, verschieben
@@ -171,6 +174,10 @@ Nähe kurz ausschalten/aus der Reichweite bringen und erneut scannen.
   auch bei vielen Punkten schnell). Hover zeigt Zeitpunkt + Wert des
   nächstgelegenen Punkts inkl. Fadenkreuz. „Punkte max.“ begrenzt, wie viele
   Rohpunkte vor der Aggregation geladen werden.
+- **Auto-Sync (pro Gerät):** Checkbox + Intervall (Minuten) im Rohdaten-Panel
+  jedes gekoppelten Geräts. Eingeschaltet ruft die App automatisch im
+  eingestellten Takt den Verlauf ab — siehe „Auto-Sync“ unten für die
+  genaue Funktionsweise (Lücken-Erkennung, Live-Abgleich).
 
 ## ⚠️ Batterie-Byte (Byte 6) ist unverifiziert
 
@@ -297,6 +304,43 @@ angepasst werden muss: bei d) enthält der Datumsteil **kein**
 Wochentags-Byte (anders als bei a) — nur `YY MM DD HH MM SS`, 6 statt
 7 Bytes — und die Checksumme läuft nur über `01 09 00 00 00 <Datum> NL NH`,
 nicht über die äußeren `CC CC`/`66 66`-Rahmen-Bytes.
+
+## Auto-Sync
+
+Periodischer, automatischer Verlaufs-Abruf mit Lücken-Erkennung (`app/ble_client.py`,
+`BleManager._auto_sync_loop`/`_run_auto_sync_for_device`/`_check_sync`). Pro Gerät
+im Dashboard ein- und ausschaltbar, Einstellung + Fortschritt (`last_synced_ts`)
+überleben einen Neustart (gespeichert in `data/devices.json`).
+
+**Ablauf bei jedem Tick** (Scheduler prüft alle 30s, ob ein Gerät fällig ist):
+
+1. **Lücke berechnen:** `jetzt − last_synced_ts` (beim allerersten Mal: das
+   eingestellte Intervall). Daraus wird über `history_record_interval_seconds`
+   die Anzahl benötigter Datensätze geschätzt, plus eine kleine Sicherheitsmarge
+   (`AUTO_SYNC_GAP_MARGIN_RECORDS = 10`). War die letzte Synchronisation vor
+   10 Minuten erfolgreich und ist seitdem nichts schiefgegangen, werden also
+   nur die letzten ~10 Minuten angefragt. Ist die letzte erfolgreiche Sync
+   schon 40 Minuten her (z. B. weil der Sensor zwischenzeitlich außer
+   Reichweite war), wird automatisch eine entsprechend größere Menge
+   angefragt — die Lücke schließt sich von selbst, ohne dass verlorene
+   Zeiträume dauerhaft fehlen.
+2. **Abrufen** wie beim manuellen „Verlauf abrufen“ (alle vier Kommandos,
+   Idle-Timeout-basiertes Warten auf die Antwort, siehe oben).
+3. **`last_synced_ts` nur bei sauberem Abschluss vorrücken:** Kam die Antwort
+   sauber terminiert zurück (`clean=True`, siehe Verlaufs-Protokoll-Abschnitt),
+   wird `last_synced_ts` auf den aktuellen Zeitpunkt gesetzt — beim nächsten
+   Tick wird dann wieder nur das normale Intervall angefragt. Brach die
+   Übertragung ab (Idle-/Gesamt-Timeout, `clean=False`), bleibt
+   `last_synced_ts` unverändert, sodass der **nächste** Versuch automatisch
+   eine größere, die Lücke einschließende Menge anfragt statt den fehlenden
+   Zeitraum stillschweigend zu verlieren.
+4. **Sync-Check:** Nach einem sauberen Abruf wird der neueste (per Zeitstempel-
+   Schätzung) Verlaufs-Datensatz mit dem aktuellen Live-Wert verglichen
+   (Toleranz: 1,0 °C / 6 % Feuchte, `SYNC_CHECK_*_TOLERANCE` in
+   `app/ble_client.py`). Passen beide zusammen, ist das ein Indiz, dass die
+   angenommene `history_record_interval_seconds` einigermaßen stimmt — reine
+   Plausibilitätsprüfung, **keine** automatische Korrektur des Intervalls.
+   Ergebnis (`last_sync_check`) steht im Dashboard und in `/api/devices`.
 
 ## Datenschutz / Speicherort
 

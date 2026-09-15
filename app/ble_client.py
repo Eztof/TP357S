@@ -27,19 +27,28 @@ import sys
 import threading
 import time
 from concurrent.futures import Future
+from datetime import datetime, timezone
 from typing import Dict, Optional
 
 from bleak import BleakClient, BleakScanner
 
 from . import protocol
 from .config import AppConfig
+from .devices import DeviceStore
 from .logging_setup import install_asyncio_exception_handler
 from .state import AppState
 from .storage import Storage
 
 logger = logging.getLogger(__name__)
 
-HISTORY_TIMEOUT_SECONDS = 30
+HISTORY_IDLE_TIMEOUT_SECONDS = 20  # Abbruch, wenn so lange kein neues Paket mehr kam
+HISTORY_MIN_OVERALL_TIMEOUT_SECONDS = 120
+HISTORY_MAX_OVERALL_TIMEOUT_SECONDS = 1800  # Sicherheitsnetz, falls die Verbindung komplett haengt
+
+AUTO_SYNC_TICK_SECONDS = 30
+AUTO_SYNC_GAP_MARGIN_RECORDS = 10  # Sicherheitsmarge oben drauf, falls das Intervall nicht exakt stimmt
+SYNC_CHECK_TEMP_TOLERANCE_C = 1.0
+SYNC_CHECK_HUMIDITY_TOLERANCE_PCT = 6
 
 
 def _bleak_version() -> str:
@@ -53,10 +62,11 @@ BLEAK_VERSION = _bleak_version()
 
 
 class BleManager:
-    def __init__(self, config: AppConfig, state: AppState, storage: Storage):
+    def __init__(self, config: AppConfig, state: AppState, storage: Storage, devices: DeviceStore):
         self.config = config
         self.state = state
         self.storage = storage
+        self.devices = devices
         self.started_at = time.time()
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -98,6 +108,111 @@ class BleManager:
         if not self._loop:
             raise RuntimeError("BLE-Event-Loop laeuft noch nicht.")
         return asyncio.run_coroutine_threadsafe(coro, self._loop)
+
+    def start_auto_sync(self) -> None:
+        """Startet den Auto-Sync-Scheduler (periodischer Verlaufs-Abruf mit
+        Luecken-Erkennung fuer alle Geraete, bei denen das im Dashboard
+        eingeschaltet ist). Einmalig nach start() aufzurufen."""
+        self._run_coro(self._auto_sync_loop())
+
+    async def _auto_sync_loop(self) -> None:
+        logger.info("Auto-Sync-Scheduler gestartet (Tick=%ds)", AUTO_SYNC_TICK_SECONDS)
+        while True:
+            try:
+                await self._auto_sync_tick()
+            except Exception:  # noqa: BLE001
+                logger.exception("Fehler im Auto-Sync-Scheduler-Tick")
+            await asyncio.sleep(AUTO_SYNC_TICK_SECONDS)
+
+    async def _auto_sync_tick(self) -> None:
+        now = datetime.now(timezone.utc)
+        for entry in self.state.list_auto_sync_devices():
+            mac = entry["mac"]
+            if mac not in self._clients:
+                continue  # nicht verbunden - beim naechsten Tick erneut versuchen
+
+            hstate = self._history_state.get(mac)
+            if hstate and hstate.get("in_progress"):
+                continue  # laeuft schon (z.B. manueller Abruf gerade aktiv)
+
+            last_attempt = entry["last_auto_sync_at"]
+            interval = entry["auto_sync_interval_seconds"]
+            if last_attempt:
+                elapsed = (now - datetime.fromisoformat(last_attempt)).total_seconds()
+                if elapsed < interval:
+                    continue
+
+            await self._run_auto_sync_for_device(mac, entry["last_synced_ts"], interval, now)
+
+    async def _run_auto_sync_for_device(
+        self, mac: str, last_synced_ts: Optional[str], interval_seconds: int, now: datetime
+    ) -> None:
+        record_interval = max(1, self.config.history_record_interval_seconds)
+        if last_synced_ts:
+            gap_seconds = (now - datetime.fromisoformat(last_synced_ts)).total_seconds()
+        else:
+            gap_seconds = interval_seconds
+        gap_seconds = max(gap_seconds, record_interval)
+        count = int(gap_seconds // record_interval) + AUTO_SYNC_GAP_MARGIN_RECORDS
+        count = max(10, min(0xFFFF, count))
+
+        logger.info(
+            "Auto-Sync: fordere Verlauf fuer %s an (Luecke=%.0fs seit %s, angefragt=%d Datensaetze)",
+            mac, gap_seconds, last_synced_ts or "nie", count,
+        )
+        self.state.append_raw_log(mac, {"kind": "info", "note": f"Auto-Sync: fordere {count} Datensaetze an (Luecke {gap_seconds:.0f}s)"})
+
+        try:
+            result = await self._request_history_async(mac, count)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Auto-Sync fuer %s fehlgeschlagen", mac)
+            self.state.set_auto_sync_result(mac, {"ok": False, "error": str(exc), "requested": count})
+            return
+
+        self.state.set_auto_sync_result(mac, {"ok": True, "requested": count, **result})
+
+        if result["clean"]:
+            new_synced_ts = now.isoformat()
+            self.state.set_last_synced(mac, new_synced_ts)
+            self.devices.set_last_synced(mac, new_synced_ts)
+            logger.info("Auto-Sync fuer %s abgeschlossen: %d Datensaetze, last_synced_ts=%s", mac, result["count"], new_synced_ts)
+            self._check_sync(mac)
+        else:
+            logger.warning(
+                "Auto-Sync fuer %s unvollstaendig (clean=%s, %d Datensaetze) - "
+                "last_synced_ts bleibt unveraendert, naechster Versuch deckt eine groessere Luecke ab",
+                mac, result["clean"], result["count"],
+            )
+
+    def _check_sync(self, mac: str) -> None:
+        """Vergleicht den neuesten (per Zeitstempel-Schaetzung) Verlaufs-
+        Datensatz mit dem aktuellen Live-Wert. Liegen Temperatur/Feuchte nah
+        beieinander, deutet das darauf hin, dass die Zeitstempel-Rekonstruktion
+        (angenommenes Aufnahmeintervall, history_record_interval_seconds)
+        einigermassen zur Realitaet passt - eine Plausibilitaetspruefung, keine
+        automatische Korrektur."""
+        live = self.state.get_last_live(mac)
+        history = self.storage.recent_history(mac, limit=1)
+        if not live or not history:
+            return
+        newest = history[0]
+        temp_diff = abs(live["temperature_c"] - newest["temperature_c"])
+        hum_diff = abs(live["humidity_pct"] - newest["humidity_pct"])
+        ok = temp_diff <= SYNC_CHECK_TEMP_TOLERANCE_C and hum_diff <= SYNC_CHECK_HUMIDITY_TOLERANCE_PCT
+        result = {
+            "ok": ok,
+            "temp_diff": round(temp_diff, 2),
+            "humidity_diff": round(hum_diff, 2),
+            "live": live,
+            "newest_history": newest,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.state.set_sync_check(mac, result)
+        self.state.append_raw_log(mac, {
+            "kind": "info",
+            "note": f"Sync-Check: {'OK' if ok else 'ABWEICHUNG'} (dT={temp_diff:.2f}C dH={hum_diff:.2f}%)",
+        })
+        logger.info("Sync-Check fuer %s: %s (dT=%.2f dH=%.2f)", mac, "OK" if ok else "ABWEICHUNG", temp_diff, hum_diff)
 
     def debug_snapshot(self) -> dict:
         return {
@@ -281,17 +396,27 @@ class BleManager:
         if is_end:
             self._finish_history(mac, hstate)
 
-    def _finish_history(self, mac: str, hstate: dict, trailing_live: Optional[protocol.Reading] = None) -> None:
+    def _finish_history(
+        self, mac: str, hstate: dict, trailing_live: Optional[protocol.Reading] = None, clean: bool = True
+    ) -> None:
+        """clean=True: sauberes Ende (explizite 66 66-Terminierung oder ein
+        Live-Paket als implizites Ende). clean=False: wir haben selbst
+        abgebrochen (Idle- oder Gesamt-Timeout) - das Geraet hat vermutlich
+        noch mehr Daten, die Uebertragung war unterbrochen/unvollstaendig."""
         records = hstate["buffer"]
         hstate["in_progress"] = False
+        hstate["clean"] = clean
 
         count = self.storage.insert_history_readings(
             mac, records, interval_seconds=self.config.history_record_interval_seconds
         )
-        self.state.set_history_result(mac, count)
+        self.state.set_history_result(mac, count, clean=clean)
         self.state.set_status(mac, "connected")
-        self.state.append_raw_log(mac, {"kind": "info", "note": f"Verlaufsabruf abgeschlossen: {count} Datensaetze"})
-        logger.info("Verlaufsabruf fuer %s abgeschlossen: %d Datensaetze", mac, count)
+        self.state.append_raw_log(mac, {
+            "kind": "info",
+            "note": f"Verlaufsabruf abgeschlossen: {count} Datensaetze ({'sauber' if clean else 'ABGEBROCHEN, vermutlich unvollstaendig'})",
+        })
+        logger.info("Verlaufsabruf fuer %s abgeschlossen: %d Datensaetze (clean=%s)", mac, count, clean)
 
         hstate["done_event"].set()
 
@@ -379,22 +504,27 @@ class BleManager:
         future.add_done_callback(_on_done)
         return future
 
-    async def _request_history_async(self, mac: str, count: int) -> int:
+    async def _request_history_async(self, mac: str, count: int) -> dict:
+        """Fordert Verlauf an und wartet IDLE-basiert auf die Antwort: solange
+        neue Pakete reinkommen, wird weitergewartet; erst wenn
+        HISTORY_IDLE_TIMEOUT_SECONDS lang gar nichts mehr kam (oder das
+        grosszuegige Gesamt-Zeitfenster ueberschritten ist), wird abgebrochen.
+        Ein fester Gesamt-Timeout (frueher: 30s, spaeter grob nach Anzahl
+        hochskaliert) erwies sich in der Praxis als zu ungenau: die
+        Uebertragungsrate ueber eine reale, ggf. schwache BLE-Verbindung ist
+        nicht konstant, ein zu kurzes festes Fenster schnitt grosse Abrufe
+        vorzeitig ab. Gibt {"count": int, "clean": bool} zurueck - clean=False
+        bedeutet: wir haben selbst abgebrochen, das Geraet hat vermutlich noch
+        mehr Daten (fuer den Auto-Sync-Mechanismus relevant, siehe dort)."""
         client = self._clients.get(mac)
         if not client or not client.is_connected:
             raise RuntimeError(f"Nicht mit {mac} verbunden.")
 
-        hstate = {"in_progress": True, "packet_index": 0, "buffer": [], "done_event": asyncio.Event()}
+        hstate = {"in_progress": True, "packet_index": 0, "buffer": [], "done_event": asyncio.Event(), "clean": False}
         self._history_state[mac] = hstate
         self.state.set_status(mac, "fetching_history")
 
-        # Skaliert mit der angefragten Anzahl: 500 Datensaetze kamen in der
-        # Praxis in ~0.1s zurueck (10 Notification-Pakete), das feste
-        # 30s-Fenster waere bei sehr grossen Anfragen (Geraet kann laut
-        # NL/NH-Feld bis zu 65535 Datensaetze liefern, ggf. Jahre an Daten)
-        # zu knapp. Grosszuegige, aber gedeckelte Marge statt eines fixen
-        # Werts, der nur fuer kleine Abrufe getestet wurde.
-        timeout = max(HISTORY_TIMEOUT_SECONDS, min(600, 10 + count / 200))
+        overall_cap = max(HISTORY_MIN_OVERALL_TIMEOUT_SECONDS, min(HISTORY_MAX_OVERALL_TIMEOUT_SECONDS, count * 0.05))
 
         async def send(label: str, payload: bytes) -> None:
             logger.debug("TX (%s) %s: %s", label, mac, payload.hex())
@@ -408,19 +538,37 @@ class BleManager:
             await send("offset", protocol.get_offset_command())
             await send("data-request", protocol.build_data_request_command(count))
 
-            logger.debug("Warte bis zu %.0fs auf Verlaufsdaten von %s (angefragt: %d)", timeout, mac, count)
-            try:
-                await asyncio.wait_for(hstate["done_event"].wait(), timeout=timeout)
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "Timeout (%.0fs) beim Warten auf Verlaufsdaten von %s, breche mit %d Datensaetzen ab",
-                    timeout, mac, len(hstate["buffer"]),
-                )
-                self._finish_history(mac, hstate)
+            logger.debug(
+                "Warte auf Verlaufsdaten von %s (angefragt: %d, Idle-Timeout=%ds, Gesamt-Obergrenze=%.0fs)",
+                mac, count, HISTORY_IDLE_TIMEOUT_SECONDS, overall_cap,
+            )
+            start = time.monotonic()
+            last_packet_index = -1
+            while True:
+                remaining_overall = overall_cap - (time.monotonic() - start)
+                if remaining_overall <= 0:
+                    logger.warning(
+                        "Gesamt-Obergrenze (%.0fs) fuer Verlaufsabruf von %s erreicht, breche mit %d Datensaetzen ab",
+                        overall_cap, mac, len(hstate["buffer"]),
+                    )
+                    self._finish_history(mac, hstate, clean=False)
+                    break
+                try:
+                    await asyncio.wait_for(hstate["done_event"].wait(), timeout=min(HISTORY_IDLE_TIMEOUT_SECONDS, remaining_overall))
+                    break
+                except asyncio.TimeoutError:
+                    if hstate["packet_index"] == last_packet_index:
+                        logger.warning(
+                            "Keine neuen Verlaufs-Pakete seit %ds von %s, beende Abruf mit %d Datensaetzen",
+                            HISTORY_IDLE_TIMEOUT_SECONDS, mac, len(hstate["buffer"]),
+                        )
+                        self._finish_history(mac, hstate, clean=False)
+                        break
+                    last_packet_index = hstate["packet_index"]
         finally:
             hstate["in_progress"] = False
 
-        return len(hstate["buffer"])
+        return {"count": len(hstate["buffer"]), "clean": hstate.get("clean", False)}
 
     # -- Rohbefehl senden (Reverse-Engineering-Werkzeug) -------------------------
 

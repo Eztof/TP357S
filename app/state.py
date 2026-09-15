@@ -24,8 +24,17 @@ class DeviceState:
         self.last_live_ts: Optional[str] = None
         self.last_history_count: Optional[int] = None
         self.last_history_ts: Optional[str] = None
+        self.last_history_clean: Optional[bool] = None
         self.raw_log: Deque[dict] = deque(maxlen=log_buffer_size)
         self.packet_count = 0
+
+        # Auto-Sync (periodischer Verlaufs-Abruf mit Luecken-Erkennung)
+        self.auto_sync_enabled: bool = False
+        self.auto_sync_interval_seconds: int = 600
+        self.last_synced_ts: Optional[str] = None
+        self.last_auto_sync_at: Optional[str] = None
+        self.last_auto_sync_result: Optional[dict] = None
+        self.last_sync_check: Optional[dict] = None
 
     def snapshot(self) -> dict:
         return {
@@ -39,7 +48,14 @@ class DeviceState:
             "last_live_ts": self.last_live_ts,
             "last_history_count": self.last_history_count,
             "last_history_ts": self.last_history_ts,
+            "last_history_clean": self.last_history_clean,
             "packet_count": self.packet_count,
+            "auto_sync_enabled": self.auto_sync_enabled,
+            "auto_sync_interval_seconds": self.auto_sync_interval_seconds,
+            "last_synced_ts": self.last_synced_ts,
+            "last_auto_sync_at": self.last_auto_sync_at,
+            "last_auto_sync_result": self.last_auto_sync_result,
+            "last_sync_check": self.last_sync_check,
         }
 
 
@@ -100,11 +116,19 @@ class AppState:
                 }
                 self._devices[mac].last_live_ts = _now_iso()
 
-    def set_history_result(self, mac: str, count: int) -> None:
+    def get_last_live(self, mac: str) -> Optional[dict]:
+        with self._lock:
+            device = self._devices.get(mac)
+            if not device or not device.last_live:
+                return None
+            return dict(device.last_live, ts=device.last_live_ts)
+
+    def set_history_result(self, mac: str, count: int, clean: bool = True) -> None:
         with self._lock:
             if mac in self._devices:
                 self._devices[mac].last_history_count = count
                 self._devices[mac].last_history_ts = _now_iso()
+                self._devices[mac].last_history_clean = clean
 
     def append_raw_log(self, mac: str, entry: dict) -> None:
         entry = dict(entry)
@@ -138,6 +162,50 @@ class AppState:
     def set_scan_results(self, results: List[dict]) -> None:
         with self._lock:
             self.scan_results = results
+
+    # -- Auto-Sync -----------------------------------------------------------
+
+    def set_auto_sync_config(self, mac: str, enabled: bool, interval_seconds: int) -> None:
+        with self._lock:
+            if mac in self._devices:
+                self._devices[mac].auto_sync_enabled = enabled
+                self._devices[mac].auto_sync_interval_seconds = interval_seconds
+
+    def set_last_synced(self, mac: str, ts: Optional[str]) -> None:
+        with self._lock:
+            if mac in self._devices:
+                self._devices[mac].last_synced_ts = ts
+
+    def get_last_synced(self, mac: str) -> Optional[str]:
+        with self._lock:
+            device = self._devices.get(mac)
+            return device.last_synced_ts if device else None
+
+    def set_auto_sync_result(self, mac: str, result: dict) -> None:
+        with self._lock:
+            if mac in self._devices:
+                self._devices[mac].last_auto_sync_at = _now_iso()
+                self._devices[mac].last_auto_sync_result = result
+
+    def set_sync_check(self, mac: str, result: dict) -> None:
+        with self._lock:
+            if mac in self._devices:
+                self._devices[mac].last_sync_check = result
+
+    def list_auto_sync_devices(self) -> List[dict]:
+        """Momentaufnahme aller Geraete mit auto_sync_enabled - fuer den
+        Scheduler im BLE-Thread, ohne dass er direkt auf _devices zugreift."""
+        with self._lock:
+            return [
+                {
+                    "mac": d.mac,
+                    "auto_sync_interval_seconds": d.auto_sync_interval_seconds,
+                    "last_synced_ts": d.last_synced_ts,
+                    "last_auto_sync_at": d.last_auto_sync_at,
+                }
+                for d in self._devices.values()
+                if d.auto_sync_enabled and not d.is_probe
+            ]
 
     def snapshot(self) -> dict:
         with self._lock:

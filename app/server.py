@@ -110,6 +110,21 @@ def create_app(config: AppConfig, state: AppState, storage: Storage, ble: BleMan
         ble.remove_device(mac)
         return jsonify({"ok": True})
 
+    @app.post("/api/devices/<mac>/auto-sync")
+    def api_set_auto_sync(mac):
+        payload = request.get_json(force=True, silent=True) or {}
+        enabled = bool(payload.get("enabled", False))
+        interval_minutes = payload.get("interval_minutes", 10)
+        try:
+            interval_seconds = max(60, int(float(interval_minutes) * 60))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "Ungueltiges Intervall"}), 400
+        record = devices.set_auto_sync(mac, enabled, interval_seconds)
+        if not record:
+            return jsonify({"ok": False, "error": "Geraet nicht gefunden (nur gekoppelte Geraete, keine Live-Tests)"}), 404
+        state.set_auto_sync_config(record.mac, enabled, interval_seconds)
+        return jsonify({"ok": True, "enabled": enabled, "interval_seconds": interval_seconds})
+
     @app.get("/api/devices/<mac>/live")
     def api_device_live(mac):
         limit = request.args.get("limit", default=50, type=int)

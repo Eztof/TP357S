@@ -37,11 +37,15 @@ def main() -> None:
     devices = DeviceStore(config.devices_path)
     logger.info("Gekoppelte Geraete geladen: %s", [d.mac for d in devices.list()])
 
-    ble = BleManager(config, state, storage)
+    ble = BleManager(config, state, storage, devices)
     ble.start()
 
     for record in devices.list():
         ble.add_device(record.mac, record.name, is_probe=False)
+        state.set_auto_sync_config(record.mac, record.auto_sync_enabled, record.auto_sync_interval_seconds)
+        state.set_last_synced(record.mac, record.last_synced_ts)
+
+    ble.start_auto_sync()
 
     app = create_app(config, state, storage, ble, devices)
     url = f"http://{config.web_host}:{config.web_port}/"
