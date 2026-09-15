@@ -160,8 +160,10 @@ class BleManager:
             await asyncio.sleep(self.config.reconnect_delay_seconds)
 
     @staticmethod
-    def _build_client(mac: str) -> BleakClient:
-        """Baut den BleakClient fuer eine Verbindung.
+    def _build_client(target) -> BleakClient:
+        """Baut den BleakClient fuer eine Verbindung. `target` ist entweder
+        die MAC-Adresse (str) oder ein bereits per _resolve_device()
+        gefundenes BLEDevice-Objekt (bevorzugt, siehe dort).
 
         winrt=dict(use_cached_services=False) deaktiviert auf Windows den
         WinRT-GATT-Geraete-Cache (verifiziert gegen bleak's
@@ -169,20 +171,48 @@ class BleManager:
         steuert BluetoothCacheMode.Uncached vs. Cached bei der Service-
         Discovery). Ein bekannter, dokumentierter Workaround gegen native
         Abstuerze (Access Violation) durch einen korrupten Geraete-Cache
-        im Windows-Bluetooth-Stack - genau das Symptom, das hier auftrat
-        (Prozess stirbt beim allerersten Verbindungsaufbau zu einem neuen
-        Geraet, ganz ohne Python-Traceback). Auf Nicht-Windows-Backends
-        wird das Argument von bleak klaglos ignoriert (generisches
-        **kwargs im gemeinsamen BleakClient.__init__), daher ohne
-        Plattform-Unterscheidung immer gesetzt."""
-        return BleakClient(mac, timeout=20.0, winrt=dict(use_cached_services=False))
+        im Windows-Bluetooth-Stack. Auf Nicht-Windows-Backends wird das
+        Argument von bleak klaglos ignoriert (generisches **kwargs im
+        gemeinsamen BleakClient.__init__), daher ohne Plattform-
+        Unterscheidung immer gesetzt."""
+        return BleakClient(target, timeout=20.0, winrt=dict(use_cached_services=False))
+
+    @staticmethod
+    async def _resolve_device(mac: str):
+        """Sucht das Geraet gezielt per Adress-Scan (BLEDevice-Objekt),
+        bevor verbunden wird - robuster als bleak nur die MAC-Adresse als
+        String zu uebergeben: dann macht bleak/winrt intern selbst einen
+        undurchsichtigen, oft zu kurzen Scan zur Aufloesung, und wirft bei
+        einem sporadisch werbenden Geraet (wie es der TP357S offenbar ist)
+        BleakDeviceNotFoundError, obwohl das Geraet eigentlich da ist.
+        Findet auch dieser gezielte Scan nichts, wird auf die MAC-Adresse
+        als String zurueckgefallen (bisheriges Verhalten, gleiches
+        Fehlerbild wie vorher - keine Verschlechterung)."""
+        logger.debug("Suche %s gezielt per Scan (bis zu 12s) ...", mac)
+        try:
+            device = await BleakScanner.find_device_by_address(mac, timeout=12.0)
+        except Exception:  # noqa: BLE001
+            logger.exception("Gezielter Scan nach %s fehlgeschlagen, verwende Adresse direkt", mac)
+            return mac
+        if device is not None:
+            logger.debug("Gezielter Scan hat %s gefunden, verwende BLEDevice-Objekt fuer Connect", mac)
+            return device
+        logger.warning("Gezielter Scan hat %s nicht gefunden, versuche Connect trotzdem ueber Adresse", mac)
+        return mac
 
     async def _connect_and_listen(self, mac: str) -> None:
         logger.info("Verbinde zu %s ...", mac)
         self.state.set_status(mac, "connecting")
         self.state.append_raw_log(mac, {"kind": "info", "note": "Verbindungsversuch gestartet"})
 
-        client = self._build_client(mac)
+        self.state.append_raw_log(mac, {"kind": "info", "note": "suche Geraet gezielt per Scan"})
+        target = await self._resolve_device(mac)
+        self.state.append_raw_log(mac, {
+            "kind": "info",
+            "note": "Geraet gefunden, verwende BLEDevice" if not isinstance(target, str) else
+                    "Geraet per Scan nicht gefunden, verwende Adresse direkt",
+        })
+        client = self._build_client(target)
 
         logger.debug("Rufe client.connect() fuer %s auf ...", mac)
         self.state.append_raw_log(mac, {"kind": "info", "note": "rufe client.connect() auf"})

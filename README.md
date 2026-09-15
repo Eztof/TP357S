@@ -190,14 +190,28 @@ letzte erreichte Schritt (`rufe client.connect() auf` vs. `client.connect()
 zurueckgekehrt` vs. `aktiviere Notify`), das grenzt zumindest ein, in
 welchem Aufruf es gestorben ist.
 
-Angewendete Mitigation (`app/ble_client.py`, `_build_client`): der Client
-wird mit `winrt=dict(use_cached_services=False)` aufgebaut — das schaltet
-den WinRT-GATT-Geräte-Cache ab (verifiziert gegen `bleak`s
-`WinRTClientArgs`/`BleakClientWinRT`: steuert `BluetoothCacheMode.Uncached`
-vs. `Cached` bei der Service-Discovery). Ein korrupter Geräte-Cache im
-Windows-Bluetooth-Stack ist eine bekannte, dokumentierte Ursache für genau
-so einen Absturz beim allerersten Verbindungsaufbau zu einem neuen Gerät.
-Zusätzlich ein expliziter `timeout=20.0` statt bleaks Default.
+Angewendete Mitigationen (`app/ble_client.py`):
+
+1. **`_resolve_device()`:** Vor jedem Verbindungsaufbau wird das Gerät erst
+   gezielt per `BleakScanner.find_device_by_address(mac, timeout=12.0)`
+   gesucht. Übergibt man `BleakClient` nur die MAC-Adresse als String,
+   macht bleak/winrt intern selbst einen undurchsichtigen, oft zu kurzen
+   Scan zur Auflösung — bei einem Gerät, das (wie der TP357S offenbar)
+   nicht durchgehend wirbt, kommt dann `BleakDeviceNotFoundError`, obwohl
+   das Gerät da ist (genau das Verhalten, das den ersten Verbindungsversuch
+   im Testlauf zuverlässig als sauber geloggte Exception statt als
+   Absturz beendet hat). Wird das `BLEDevice`-Objekt gefunden, wird es
+   direkt an `BleakClient` übergeben statt nur der Adresse.
+2. **`_build_client()`:** `winrt=dict(use_cached_services=False)` schaltet
+   den WinRT-GATT-Geräte-Cache ab (verifiziert gegen `bleak`s
+   `WinRTClientArgs`/`BleakClientWinRT`: steuert
+   `BluetoothCacheMode.Uncached` vs. `Cached` bei der Service-Discovery).
+   Ein korrupter Geräte-Cache im Windows-Bluetooth-Stack ist eine bekannte
+   Ursache für genau so einen Absturz. Zusätzlich ein expliziter
+   `timeout=20.0` statt bleaks Default.
+3. Jeder Schritt (Suche, Connect-Aufruf, Notify aktivieren) wird einzeln
+   in den Rohdaten-Feed des Geräts geloggt — falls es doch wieder
+   abstürzt, zeigt `/api/devices/<mac>/log`, wie weit es diesmal kam.
 
 Falls der Absturz trotzdem wieder auftritt (auf **Python 3.14** ist das
 nicht ausgeschlossen — die `winrt`-Bindungen sind dafür noch vergleichsweise
