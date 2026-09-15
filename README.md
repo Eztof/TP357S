@@ -37,6 +37,18 @@ TP357S/
 **Windows:** Doppelklick auf `start.bat`.
 **Linux/macOS:** `./start.sh` im Terminal ausführen.
 
+`start.py` selbst bitte nicht direkt per Doppelklick starten — es enthält
+keine Installationslogik und benötigt die vorher von `start.bat`/`start.sh`
+angelegte virtuelle Umgebung mit installierten Abhängigkeiten.
+`start.sh` ist ein Bash-Skript und funktioniert unter Windows nicht (kein
+Fehler, es passiert dort einfach nichts).
+
+Falls `start.bat` beim ersten Versuch mit einem Fehler bei der Installation
+von `bleak` abbricht: erst den (dann unvollständigen) `venv`-Ordner löschen
+und `start.bat` erneut ausführen — das Fehlschlagen der Installation wird
+jetzt außerdem klar erkannt und die App startet nicht mehr mit fehlenden
+Abhängigkeiten.
+
 Beim ersten Start wird automatisch eine virtuelle Umgebung angelegt, die
 Abhängigkeiten installiert und `config.json` aus `config.example.json`
 erzeugt. Trage dort die MAC-Adresse deines Sensors ein:
