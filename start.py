@@ -13,6 +13,7 @@ import webbrowser
 from app.ble_client import BleManager
 from app.config import load_config
 from app.devices import DeviceStore
+from app.firebase_sync import FirebaseSync
 from app.logging_setup import setup_logging
 from app.server import create_app
 from app.state import AppState
@@ -47,7 +48,10 @@ def main() -> None:
 
     ble.start_auto_sync()
 
-    app = create_app(config, state, storage, ble, devices)
+    firebase = FirebaseSync(config, storage, devices)
+    firebase.start()
+
+    app = create_app(config, state, storage, ble, devices, firebase)
     url = f"http://{config.web_host}:{config.web_port}/"
 
     def open_browser() -> None:

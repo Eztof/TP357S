@@ -342,8 +342,80 @@ im Dashboard ein- und ausschaltbar, Einstellung + Fortschritt (`last_synced_ts`)
    Plausibilitätsprüfung, **keine** automatische Korrektur des Intervalls.
    Ergebnis (`last_sync_check`) steht im Dashboard und in `/api/devices`.
 
+## Firebase-Upload (Firestore)
+
+Optionaler periodischer Upload aller neuen Live-/Verlaufs-Messwerte nach
+Firestore (`app/firebase_sync.py`). Standardmäßig **deaktiviert**
+(`firebase_enabled: false`).
+
+**Warum Firestore und nicht Realtime Database oder Storage:** Firestore ist
+für strukturierte, abfragbare Zeitreihen-Daten mit moderater Schreibrate
+gemacht — genau der Fall hier (kleine Batches alle paar Minuten, später
+z. B. nach Sensor/Zeitraum abfragbar). Realtime Database ist auf sehr
+hochfrequente, kleine Live-Sync-Updates ausgelegt und Abfragen über
+Zeiträume sind dort deutlich umständlicher. Cloud Storage ist Datei-Ablage
+(Objekte), keine strukturierten Einzel-Datensätze — ungeeignet hier.
+
+**Security Rules sind irrelevant:** Der Upload läuft über einen
+Service-Account (Firebase Admin SDK) direkt vom eigenen Rechner aus.
+Admin-Zugriff umgeht Firestore-Security-Rules grundsätzlich — die gelten
+nur für Client-SDKs (Browser-/App-Code), nie für serverseitigen
+Admin-Zugriff. Es muss und wird nichts an den Rules des Projekts verändert.
+
+### Einrichtung
+
+1. Firebase Console → Projekteinstellungen → Dienstkonten → „Neuen privaten
+   Schlüssel generieren“ → die heruntergeladene JSON-Datei als
+   `firebase-service-account.json` in den Projektordner legen (neben
+   `start.bat`). Die Datei ist in `.gitignore` eingetragen — landet nicht
+   im Repo, aber lokal ist keine Verschlüsselung o. Ä. vorgesehen: sie
+   liegt als Klartext-Datei auf der Platte, wie jede lokale Credential-Datei.
+2. In `config.json`: `"firebase_enabled": true` setzen. Optional
+   anpassen: `firebase_collection` (Standard: `"readings"`),
+   `firebase_upload_interval_seconds` (Standard: 600 = 10 Min.),
+   `firebase_upload_initial_delay_seconds` (Standard: 300 = 5 Min. Versatz
+   zum Start, damit der Auto-Sync-Mechanismus vor dem ersten Upload schon
+   mindestens einmal gelaufen ist).
+3. App neu starten. Im Dashboard unter „Firebase-Upload“: Status, letzter
+   Lauf, Ergebnis pro Sensor — sowie ein „Jetzt hochladen“-Button für einen
+   sofortigen Testlauf statt auf den nächsten Tick zu warten.
+
+### Datenmodell
+
+**Eine flache Collection** (alle Sensoren zusammen, Standardname
+`readings`) statt einer Unter-Collection pro Sensor — einfacher zu pflegen
+und für Firestore-Abfragen genauso leistungsfähig. Ein Dokument pro
+Messwert:
+
+```json
+{
+  "mac": "AA:BB:CC:DD:EE:FF",
+  "name": "Wohnzimmer",
+  "ts": "2026-09-15T21:00:00+00:00",
+  "temperature_c": 21.5,
+  "humidity_pct": 55,
+  "source": "live",
+  "synced_at": "2026-09-15T21:05:03+00:00"
+}
+```
+
+`source` ist `"live"` oder `"history"`. Für Abfragen nach Sensor + Zeitraum
+lohnt sich ein zusammengesetzter Index auf `(mac, ts)` in der Firestore-
+Konsole, falls Firestore danach fragt (Composite-Index-Vorschlag erscheint
+automatisch bei der ersten entsprechenden Abfrage mit `where`+`orderBy`).
+
+**Fortschritt wird lokal verfolgt**, nicht in Firestore: SQLite-Tabelle
+`firebase_sync_state` merkt sich je Sensor die zuletzt hochgeladene
+`id` aus `live_readings`/`history_readings`. Jeder Tick lädt nur, was seit
+dem letzten Mal neu dazugekommen ist — kein Firestore-Read nötig, um das
+herauszufinden (spart Kosten/Latenz), funktioniert auch über
+Neustarts hinweg weiter.
+
 ## Datenschutz / Speicherort
 
-Alle Daten bleiben lokal auf dem PC in `data/tp357s.db` (SQLite). Es gibt
-keine Cloud-Anbindung; der Webserver lauscht standardmäßig nur auf
-`127.0.0.1` (nicht im Netzwerk erreichbar).
+Alle Daten bleiben lokal auf dem PC in `data/tp357s.db` (SQLite) — außer,
+Firebase-Upload ist aktiviert (siehe oben), dann werden alle neuen
+Live-/Verlaufs-Messwerte zusätzlich in dein eigenes Firestore-Projekt
+hochgeladen. Ohne Firebase-Upload gibt es keine Cloud-Anbindung; der
+Webserver lauscht standardmäßig nur auf `127.0.0.1` (nicht im Netzwerk
+erreichbar).

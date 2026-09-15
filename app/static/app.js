@@ -31,6 +31,10 @@ const graphInfoEl = document.getElementById("graph-info");
 const graphTempSvg = document.getElementById("graph-temp");
 const graphHumSvg = document.getElementById("graph-hum");
 
+const firebaseUploadNowBtn = document.getElementById("firebase-upload-now-btn");
+const firebaseStatusEl = document.getElementById("firebase-status");
+const firebaseDetailEl = document.getElementById("firebase-detail");
+
 let pairedMacs = new Set();
 let selectedHistoryMac = null;
 const trackedDeviceLogs = new Map(); // mac -> { el, intervalId }
@@ -793,9 +797,49 @@ refreshAll();
 refreshConfig();
 refreshDebug();
 refreshLog();
+refreshFirebaseStatus();
 
 setInterval(refreshAll, 2000);
 setInterval(refreshDebug, 5000);
 setInterval(refreshLog, 4000);
 setInterval(refreshHistory, 15000);
 setInterval(refreshGraph, 15000);
+setInterval(refreshFirebaseStatus, 10000);
+
+// -- Firebase-Upload -----------------------------------------------------------
+
+async function refreshFirebaseStatus() {
+  try {
+    const s = await fetchJSON("/api/firebase/status");
+    if (!s.enabled) {
+      firebaseStatusEl.textContent = "deaktiviert (firebase_enabled=false in config.json)";
+      firebaseUploadNowBtn.disabled = true;
+      firebaseDetailEl.textContent = "";
+      return;
+    }
+    firebaseUploadNowBtn.disabled = false;
+    const parts = [
+      `Collection: ${s.collection}`,
+      `Intervall: ${Math.round(s.upload_interval_seconds / 60)} Min.`,
+      s.last_upload_at ? `letzter Lauf: ${toLocalTime(s.last_upload_at)}` : "noch kein Lauf",
+    ];
+    firebaseStatusEl.textContent = parts.join(" · ");
+    firebaseDetailEl.textContent = s.last_result ? JSON.stringify(s.last_result, null, 2) : "(noch kein Ergebnis)";
+  } catch (e) {
+    firebaseStatusEl.textContent = "Fehler: " + e.message;
+  }
+}
+
+firebaseUploadNowBtn.addEventListener("click", async () => {
+  firebaseUploadNowBtn.disabled = true;
+  try {
+    await fetchJSON("/api/firebase/upload-now", { method: "POST" });
+  } catch (e) {
+    alert("Upload konnte nicht gestartet werden: " + e.message);
+  } finally {
+    setTimeout(() => {
+      firebaseUploadNowBtn.disabled = false;
+      refreshFirebaseStatus();
+    }, 2000);
+  }
+});

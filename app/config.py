@@ -25,6 +25,11 @@ class AppConfig:
     log_max_bytes: int
     log_backup_count: int
     device_log_buffer_size: int
+    firebase_enabled: bool
+    firebase_service_account_path: Path
+    firebase_collection: str
+    firebase_upload_interval_seconds: int
+    firebase_upload_initial_delay_seconds: int
 
     def as_json_dict(self) -> dict:
         raw = asdict(self)
@@ -57,6 +62,11 @@ def load_config() -> AppConfig:
         log_max_bytes=int(raw.get("log_max_bytes", 5_000_000)),
         log_backup_count=int(raw.get("log_backup_count", 5)),
         device_log_buffer_size=int(raw.get("device_log_buffer_size", 500)),
+        firebase_enabled=bool(raw.get("firebase_enabled", False)),
+        firebase_service_account_path=BASE_DIR / raw.get("firebase_service_account_path", "firebase-service-account.json"),
+        firebase_collection=raw.get("firebase_collection", "readings"),
+        firebase_upload_interval_seconds=int(raw.get("firebase_upload_interval_seconds", 600)),
+        firebase_upload_initial_delay_seconds=int(raw.get("firebase_upload_initial_delay_seconds", 300)),
     )
     logger.debug("Konfiguration geladen aus %s: %s", path, config.as_json_dict())
     return config

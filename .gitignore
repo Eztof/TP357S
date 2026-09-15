@@ -8,3 +8,4 @@ data/*.db-wal
 data/*.db-shm
 data/devices.json
 data/app.log*
+firebase-service-account.json

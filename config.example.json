@@ -10,5 +10,10 @@
   "log_level": "DEBUG",
   "log_max_bytes": 5000000,
   "log_backup_count": 5,
-  "device_log_buffer_size": 500
+  "device_log_buffer_size": 500,
+  "firebase_enabled": false,
+  "firebase_service_account_path": "firebase-service-account.json",
+  "firebase_collection": "readings",
+  "firebase_upload_interval_seconds": 600,
+  "firebase_upload_initial_delay_seconds": 300
 }

@@ -13,6 +13,7 @@ from . import protocol
 from .ble_client import BleManager
 from .config import AppConfig
 from .devices import DeviceStore
+from .firebase_sync import FirebaseSync
 from .logging_setup import tail_log_file
 from .state import AppState
 from .storage import Storage, aggregate_points
@@ -22,7 +23,10 @@ logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
-def create_app(config: AppConfig, state: AppState, storage: Storage, ble: BleManager, devices: DeviceStore) -> Flask:
+def create_app(
+    config: AppConfig, state: AppState, storage: Storage, ble: BleManager, devices: DeviceStore,
+    firebase: FirebaseSync,
+) -> Flask:
     app = Flask(__name__, static_folder=None)
 
     @app.errorhandler(Exception)
@@ -124,6 +128,17 @@ def create_app(config: AppConfig, state: AppState, storage: Storage, ble: BleMan
             return jsonify({"ok": False, "error": "Geraet nicht gefunden (nur gekoppelte Geraete, keine Live-Tests)"}), 404
         state.set_auto_sync_config(record.mac, enabled, interval_seconds)
         return jsonify({"ok": True, "enabled": enabled, "interval_seconds": interval_seconds})
+
+    @app.get("/api/firebase/status")
+    def api_firebase_status():
+        return jsonify(firebase.snapshot())
+
+    @app.post("/api/firebase/upload-now")
+    def api_firebase_upload_now():
+        if not config.firebase_enabled:
+            return jsonify({"ok": False, "error": "firebase_enabled ist false in config.json"}), 400
+        firebase.trigger_now()
+        return jsonify({"ok": True})
 
     @app.get("/api/devices/<mac>/live")
     def api_device_live(mac):

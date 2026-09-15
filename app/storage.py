@@ -28,6 +28,12 @@ CREATE TABLE IF NOT EXISTS history_readings (
     UNIQUE(mac, ts_estimated, temperature_c, humidity_pct)
 );
 CREATE INDEX IF NOT EXISTS idx_history_mac_ts ON history_readings(mac, ts_estimated);
+
+CREATE TABLE IF NOT EXISTS firebase_sync_state (
+    mac TEXT PRIMARY KEY,
+    last_live_id INTEGER NOT NULL DEFAULT 0,
+    last_history_id INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -107,6 +113,46 @@ class Storage:
             rows = cur.fetchall()
         rows.reverse()
         return [{"ts": r[0], "temperature_c": r[1], "humidity_pct": r[2]} for r in rows]
+
+    def get_sync_cursor(self, mac: str) -> "tuple[int, int]":
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT last_live_id, last_history_id FROM firebase_sync_state WHERE mac = ?", (mac,)
+            )
+            row = cur.fetchone()
+        return (row[0], row[1]) if row else (0, 0)
+
+    def set_sync_cursor(self, mac: str, last_live_id: int, last_history_id: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO firebase_sync_state (mac, last_live_id, last_history_id) VALUES (?, ?, ?) "
+                "ON CONFLICT(mac) DO UPDATE SET last_live_id = excluded.last_live_id, "
+                "last_history_id = excluded.last_history_id",
+                (mac, last_live_id, last_history_id),
+            )
+            self._conn.commit()
+
+    def unsynced_live_rows(self, mac: str, after_id: int, limit: int = 500) -> List[dict]:
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT id, ts, temperature_c, humidity_pct, battery_pct FROM live_readings "
+                "WHERE mac = ? AND id > ? ORDER BY id ASC LIMIT ?",
+                (mac, after_id, limit),
+            )
+            rows = cur.fetchall()
+        return [{"id": r[0], "ts": r[1], "temperature_c": r[2], "humidity_pct": r[3], "battery_pct": r[4]} for r in rows]
+
+    def unsynced_history_rows(self, mac: str, after_id: int, limit: int = 2000) -> List[dict]:
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT id, ts_estimated, temperature_c, humidity_pct, fetched_at FROM history_readings "
+                "WHERE mac = ? AND id > ? ORDER BY id ASC LIMIT ?",
+                (mac, after_id, limit),
+            )
+            rows = cur.fetchall()
+        return [
+            {"id": r[0], "ts": r[1], "temperature_c": r[2], "humidity_pct": r[3], "fetched_at": r[4]} for r in rows
+        ]
 
     def export_csv_rows(self, mac: Optional[str] = None):
         with self._lock:
