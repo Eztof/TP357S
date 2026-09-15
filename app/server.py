@@ -161,12 +161,10 @@ def create_app(config: AppConfig, state: AppState, storage: Storage, ble: BleMan
 
     @app.get("/api/protocol/examples")
     def api_protocol_examples():
-        """Liefert die einzige vollstaendig bekannte Kommando-Byte-Folge
-        (Datenanfrage, siehe protocol.DATA_REQUEST_OPCODE) fertig kodiert
-        fuer den aktuellen Zeitpunkt - zum Reinkopieren in die Rohbefehl-
-        Konsole, als Ausgangspunkt fuers Experimentieren mit den drei noch
-        unbekannten Kommandos (gleicher Feldaufbau: Praefix + YY MM DD HH
-        MM SS DOW [+ optionale Felder] + Checksumme)."""
+        """Liefert das Datenanfrage-Kommando fertig kodiert fuer den
+        aktuellen Zeitpunkt - zum Reinkopieren in die Rohbefehl-Konsole,
+        z.B. um es isoliert (ohne die drei vorgeschalteten Kommandos) am
+        Geraet zu testen."""
         count = request.args.get("count", default=500, type=int)
         data_request = protocol.build_data_request_command(count)
         return jsonify({
@@ -174,10 +172,10 @@ def create_app(config: AppConfig, state: AppState, storage: Storage, ble: BleMan
             "data_request_hex": data_request.hex(),
             "data_request_count": count,
             "note": (
-                "Einziges vollstaendig bekanntes Kommando. Aufbau: "
-                f"{protocol.DATA_REQUEST_OPCODE.hex()} (Praefix) + YY MM DD HH MM SS DOW "
-                "(aktuelles Datum/Zeit, je 1 Byte) + NL NH (Anzahl, 16-bit little-endian) "
-                "+ CS (Checksumme = sum(bytes) & 0xFF ueber alles davor)."
+                "Aufbau: CC CC 01 09 00 00 00 YY MM DD HH MM SS NL NH CS 66 66 "
+                "(YY MM DD HH MM SS = aktuelles Datum/Zeit ohne Wochentag, "
+                "NL NH = Anzahl als 16-bit little-endian, "
+                "CS = Checksumme ueber 01 09 00 00 00 <Datum> NL NH)."
             ),
         })
 

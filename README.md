@@ -132,9 +132,11 @@ Nähe kurz ausschalten/aus der Reichweite bringen und erneut scannen.
   (−40…85 °C, 0…100 %) und in `live_readings` gespeichert (mit
   MAC-Zuordnung).
 - **Historie:** Über den Button „Verlauf vom Sensor abrufen“ (Verlauf-
-  Bereich, Sensor per Dropdown auswählbar) wird die interne Aufzeichnung
-  abgerufen und in `history_readings` gespeichert. Da die Datensätze
-  selbst keinen Zeitstempel tragen, wird er anhand von
+  Bereich, Sensor per Dropdown auswählbar) sendet die App die vier
+  Vorbereitungs-/Anfrage-Kommandos (Uhrzeit-Sync, Session-Init, Offset,
+  Datenanfrage — alle vollständig implementiert, siehe `app/protocol.py`)
+  und speichert die zurückkommenden Datensätze in `history_readings`. Da
+  die Datensätze selbst keinen Zeitstempel tragen, wird er anhand von
   `history_record_interval_seconds` (Annahme über das Aufnahmeintervall
   des Geräts, Standard: 60 s) rückwärts vom Abrufzeitpunkt geschätzt.
 - **Umbenennen/Entfernen:** jederzeit im Dashboard möglich.
@@ -145,86 +147,9 @@ Nähe kurz ausschalten/aus der Reichweite bringen und erneut scannen.
   (`…2b11`) an den Sensor senden (`POST /api/devices/<mac>/write`), die
   Antwort erscheint wie jedes andere empfangene Paket live im Feed. Der
   Button „+ Checksumme anhängen“ ruft `GET /api/checksum?hex=...` auf und
-  hängt `sum(bytes) & 0xFF` als letztes Byte an (dieselbe Checksumme, die
-  auch die Verlaufs-Kommandos verwenden). Gedacht zum Ausprobieren der drei
-  fehlenden Verlaufs-Kommandos (siehe Hinweis unten) direkt am echten Gerät.
-  Der Button „Beispiel einfügen (Datenanfrage)“ füllt das Eingabefeld mit
-  dem einzigen vollständig bekannten und funktionierenden Kommando
-  (`01 09 ...`, fertig kodiert mit aktueller Uhrzeit und Anzahl 500) —
-  praktisch für einen ersten Test ganz ohne eigenes Wissen über das
-  Protokoll: Button klicken, „Rohbefehl senden“ klicken, im Feed direkt
-  darunter beobachten, ob eine Antwort kommt.
-- **Zeit-Kandidat bauen (pro Gerät):** eigenes Eingabefeld unterhalb der
-  Rohbefehl-Konsole. Praefix eintragen (z. B. `0101`), Button klicken —
-  baut `Praefix + aktuelles Datum (YY MM DD HH MM SS DOW) + Checksumme`
-  (`GET /api/protocol/time-shaped-candidate?prefix=...`, gleiches Schema
-  wie das bekannte Datenanfrage-Kommando) und trägt das Ergebnis direkt ins
-  Sendefeld ein. Erspart das manuelle Ausrechnen von Datum und Checksumme
-  bei jedem Testversuch.
-
-## Wie komme ich an die drei fehlenden Verlaufs-Kommandos?
-
-Reines Ausprobieren zufälliger Bytes bringt bei den drei unbekannten
-Kommandos (Uhrzeit-Sync, Session-Init, Offset) wenig — der Byte-Raum ist
-zu groß. Drei sinnvolle Wege, der Reihe nach:
-
-**1. Erst mal testen, ob sie überhaupt nötig sind.** Manche Sensoren
-akzeptieren eine Datenanfrage auch ohne die vorgeschalteten
-„Vorbereitungs“-Kommandos. Im Dashboard bei einem verbundenen Gerät:
-„Beispiel einfügen (Datenanfrage)“ → „Rohbefehl senden“ → Feed beobachten.
-Kommt danach eine Antwort mit dem Header `CC CC 01 ...`, war das schon die
-ganze Lösung (dann bitte melden, dann trage ich es direkt als
-Sonderfall in `app/protocol.py` ein). Kommt nichts oder eine Fehlerantwort,
-sind die drei Kommandos vermutlich wirklich nötig.
-
-**2. Begründet raten mit „Zeit-Kandidat bauen“.** Da das bekannte
-Datenanfrage-Kommando `01 09` heißt, ist es plausibel, dass Uhrzeit-Sync
-ein Geschwister-Kommando mit demselben `01`-Präfix ist. Präfixe `0101`
-bis `0108` der Reihe nach durchprobieren (jeweils: Präfix eintragen →
-„Zeit-Kandidat bauen“ → „Rohbefehl senden“ → Feed beobachten, ob eine
-Reaktion kommt). Das ist ein informierter Versuch, keine Garantie — aber
-kostenlos und schnell durchprobiert.
-
-**Wichtig zu wissen: Bluetooth lässt sich nicht wie WLAN „nebenbei“
-mitschneiden.** Koppelt man das Handy separat mit dem PC, sieht der PC
-dadurch **nicht** die andere Bluetooth-Verbindung zwischen Handy und
-Sensor — jede Bluetooth-Verbindung ist paarweise, kein gemeinsames Medium
-wie offenes WLAN. Um wirklich zu sehen, was die ThermoPro-App an den
-Sensor sendet, bleiben nur zwei Wege: das interne Bluetooth-Log des
-Handys (nächster Punkt) oder ein dedizierter BLE-Sniffer als separates
-drittes Gerät (Hardware wie ein Nordic-nRF52840-Dongle mit
-Sniffer-Firmware + Wireshark, zeichnet die Funkpakete zwischen Handy und
-Sensor unabhängig von beiden auf).
-
-**3. BLE-Sniff der offiziellen ThermoPro-App** (zuverlässigster Weg, wenn
-1./2. nicht reichen) — auf Android, ohne Root:
-
-1. Einstellungen → Über das Telefon → 7× auf „Build-Nummer“ tippen
-   (aktiviert Entwickleroptionen), falls noch nicht aktiv.
-2. Einstellungen → Entwickleroptionen → „Bluetooth-HCI-Snoop-Log“
-   aktivieren.
-3. Bluetooth kurz aus- und wieder einschalten (damit die Aufzeichnung
-   sauber neu startet).
-4. Offizielle ThermoPro-App öffnen, mit demselben Sensor verbinden und
-   den Verlauf abrufen (genau die Aktion, deren Bytes wir sehen wollen).
-5. Entwickleroptionen → „Bluetooth-HCI-Snoop-Log“ wieder ausschalten.
-6. Die Log-Datei holen: entweder per USB-Debugging mit
-   `adb bugreport` (enthält u. a. `FS/bt_stack.log_snoop` bzw.
-   `btsnoop_hci.log`), oder falls im Hersteller-Dateisystem sichtbar
-   direkt unter `/sdcard/btsnoop_hci.log` bzw. im internen Speicher unter
-   „Android/data“ — je nach Android-Version leicht unterschiedlich.
-7. Die Datei in **Wireshark** öffnen und nach
-   `btatt.opcode == 0x52 || btatt.opcode == 0x12` filtern (Write
-   Request/Command) auf dem Handle der Write-Characteristic
-   (`00010203-0405-0607-0809-0a0b0c0d2b11`). Die dort sichtbaren
-   „Value“-Bytes sind die gesuchten Kommandos — in der Reihenfolge, in der
-   die App sie sendet, entsprechen sie a) Uhrzeit-Sync, b) Session-Init,
-   c) Offset, d) Datenanfrage.
-8. Die gefundenen Bytes in `app/protocol.py` eintragen
-   (`TIME_SYNC_OPCODE`, `SESSION_INIT_COMMAND`, `OFFSET_COMMAND` — bei
-   a) nur den festen Präfix vor den Datumsfeldern notieren, bei b)/c)
-   die komplette feste Byte-Folge). Vorher unbedingt mit der Rohbefehl-
-   Konsole am eigenen Gerät gegentesten, dass es funktioniert.
+  hängt `sum(bytes) & 0xFF` als letztes Byte an. Nützlich zum Debuggen
+  bzw. Experimentieren mit dem Protokoll direkt am echten Gerät, unabhängig
+  vom normalen „Verlauf abrufen“-Ablauf.
 
 ## ⚠️ Batterie-Byte (Byte 6) ist unverifiziert
 
@@ -330,34 +255,25 @@ neu und ihr Kompatibilitätsstand kann sich mit jedem Patch-Release ändern):
   Python 3.11/3.12 sind für `bleak`/`winrt` unter Windows am längsten im
   Einsatz und am besten getestet.
 
-## ⚠️ Wichtiger Hinweis zum Verlaufs-Abruf
+## Verlaufs-Protokoll (`app/protocol.py`)
 
-Die Spezifikation, nach der diese Anwendung gebaut wurde, beschreibt für
-den Verlaufs-Abruf vier zu sendende Kommandos (a–d). Für Kommando d
-(Datenanfrage) war der Byte-Präfix eindeutig angegeben (`01 09 ...`) und ist
-in `app/protocol.py` (`DATA_REQUEST_OPCODE`) bereits fest hinterlegt. Für
-die drei anderen Kommandos – **a) Uhrzeit-Sync**, **b) Session-Init**,
-**c) Offset-Kommando** – waren in der Vorlage nur die *Feldbedeutungen*
-beschrieben, nicht die tatsächlichen festen Byte-Werte (vermutlich beim
-Kopieren verloren gegangen).
-
-Diese drei Konstanten sind in `app/protocol.py` als Platzhalter markiert:
+Alle vier Verlaufs-Kommandos sind implementiert und gegen ein unabhängiges,
+gegen echte Sensor-Antworten verifiziertes Referenzprojekt (pytp357s)
+abgeglichen:
 
 ```python
-TIME_SYNC_OPCODE: Optional[bytes] = None       # z. B. bytes([0x01, 0x01])
-SESSION_INIT_COMMAND: Optional[bytes] = None
-OFFSET_COMMAND: Optional[bytes] = None
+TIME_SYNC_OPCODE      = bytes([0xA5])                                            # a) A5 YY MM DD HH MM SS DOW CS
+SESSION_INIT_COMMAND  = bytes([0xCC,0xCC,0x02,0x01,0x00,0x00,0x01,0x04,0x66,0x66])  # b) fest
+OFFSET_COMMAND        = bytes([0xCC,0xCC,0x04,0x00,0x00,0x00,0x00,0x04,0x66,0x66])  # c) fest
+DATA_REQUEST_OPCODE   = bytes([0x01, 0x09])                                       # d) CC CC 01 09 00 00 00 YY MM DD HH MM SS NL NH CS 66 66
 ```
 
-**Der Live-Wert funktioniert bereits vollständig ohne weitere Änderungen.**
-Für den Verlaufs-Abruf müssen diese drei Byte-Sequenzen einmalig eingetragen
-werden — siehe „Wie komme ich an die drei fehlenden Verlaufs-Kommandos?“
-oben für die konkrete Vorgehensweise (erst per Rohbefehl-Konsole testen, ob
-sie überhaupt nötig sind, sonst per BLE-Sniff der offiziellen App ermitteln).
-
-Solange die drei Konstanten `None` sind, gibt das Dashboard beim Versuch,
-die Historie abzurufen, eine klare Fehlermeldung aus statt stillschweigend
-falsche Daten zu senden.
+Details und Reihenfolge stehen als Kommentar am Anfang von
+`app/protocol.py`. Wichtigste Stolperfalle, falls das Protokoll mal
+angepasst werden muss: bei d) enthält der Datumsteil **kein**
+Wochentags-Byte (anders als bei a) — nur `YY MM DD HH MM SS`, 6 statt
+7 Bytes — und die Checksumme läuft nur über `01 09 00 00 00 <Datum> NL NH`,
+nicht über die äußeren `CC CC`/`66 66`-Rahmen-Bytes.
 
 ## Datenschutz / Speicherort
 

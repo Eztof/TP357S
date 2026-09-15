@@ -1,14 +1,18 @@
 """ThermoPro TP357S BLE-GATT-Protokoll: Dekodierung/Kodierung der Datenpakete.
 
-UUIDs, Aufbau der Live-Werte und Aufbau/Beendigung der Verlaufsantwort sind
-vollstaendig nach der Spezifikation implementiert. Fuer den Verlaufs-Abruf
-(request_history) fehlen in der urspruenglichen Spezifikation die konkreten
-Hex-Bytes fuer drei der vier zu sendenden Kommandos (Uhrzeit-Sync, Session-Init,
-Offset-Kommando) - dort waren nur die *Feldbedeutungen*, nicht die festen
-Opcode-/Praefix-Bytes angegeben. Diese drei Konstanten sind unten als
-Platzhalter (None) markiert und muessen einmalig eingetragen werden, bevor der
-Verlaufs-Abruf funktioniert. Der Live-Wert und die Datenanfrage (Kommando d,
-Praefix "01 09" laut Spezifikation) funktionieren bereits vollstaendig.
+Alle vier Verlaufs-Kommandos sind vollstaendig implementiert und gegen ein
+unabhaengiges, gegen echte Sensor-Antworten verifiziertes Referenzprojekt
+abgeglichen (Ursprung: pytp357s):
+
+a) Uhrzeit-Sync:    A5 YY MM DD HH MM SS DOW CS                  (9 Bytes, eigenes Format)
+b) Session-Init:    CC CC 02 01 00 00 01 04 66 66                (fest, 10 Bytes)
+c) Offset:          CC CC 04 00 00 00 00 04 66 66                (fest, 10 Bytes)
+d) Datenanfrage:    CC CC 01 09 00 00 00 YY MM DD HH MM SS NL NH CS 66 66
+
+Bei a) ist CS = Checksumme ueber A5+Datumsfelder. Bei d) ist CS = Checksumme
+ueber die Bytes ab "01 09" bis einschliesslich NH (NICHT ueber die
+CC-CC-Praefix und NICHT ueber die abschliessenden 66-66-Bytes). Kommando d)
+hat - anders als a) - KEIN Wochentags-Byte im Datumsteil.
 """
 from dataclasses import dataclass
 from datetime import datetime
@@ -40,21 +44,22 @@ HISTORY_END_MARKER = bytes([0x66, 0x66])
 COMMAND_DELAY_SECONDS = 0.25
 
 # --- Verlaufs-Kommandos ----------------------------------------------------
-# WICHTIG: In der Vorlage fehlten die konkreten Byte-Werte fuer diese drei
-# Kommandos (nur die Feldbedeutungen waren beschrieben). Bitte hier eintragen,
-# sobald bekannt (z.B. aus einem BLE-Sniff der offiziellen ThermoPro-App).
-#
-# TIME_SYNC_OPCODE: fester Praefix vor YY MM DD HH MM SS DOW (Kommando a)
-TIME_SYNC_OPCODE: Optional[bytes] = None  # z.B. bytes([0x01, 0x01])
 
-# SESSION_INIT_COMMAND: komplettes, festes Kommando ohne variable Felder (b)
-SESSION_INIT_COMMAND: Optional[bytes] = None
+# a) Uhrzeit-Sync: Opcode 0xA5, danach YY MM DD HH MM SS DOW + Checksumme.
+TIME_SYNC_OPCODE: bytes = bytes([0xA5])
 
-# OFFSET_COMMAND: komplettes, festes Kommando ohne variable Felder (c)
-OFFSET_COMMAND: Optional[bytes] = None
+# b) Session-Init: komplettes, festes Kommando ohne variable Felder.
+SESSION_INIT_COMMAND: bytes = bytes([0xCC, 0xCC, 0x02, 0x01, 0x00, 0x00, 0x01, 0x04, 0x66, 0x66])
 
-# DATA_REQUEST_OPCODE: laut Spezifikation belegt ("Bytes ab 01 09 ... bis NH")
+# c) Offset-Kommando: komplettes, festes Kommando ohne variable Felder.
+OFFSET_COMMAND: bytes = bytes([0xCC, 0xCC, 0x04, 0x00, 0x00, 0x00, 0x00, 0x04, 0x66, 0x66])
+
+# d) Datenanfrage: Opcode "01 09" innerhalb des CC-CC/66-66-Rahmens (siehe
+# build_data_request_command).
 DATA_REQUEST_OPCODE: bytes = bytes([0x01, 0x09])
+
+HISTORY_REQUEST_FRAME_PREFIX: bytes = HISTORY_HEADER_MARKER  # CC CC - gleiche Bytes wie der Antwort-Header
+HISTORY_REQUEST_FRAME_SUFFIX: bytes = HISTORY_END_MARKER  # 66 66 - gleiche Bytes wie das Antwort-Ende
 
 
 @dataclass
@@ -141,11 +146,7 @@ def _bcd_datetime_fields(dt: datetime) -> bytes:
 
 
 def build_time_sync_command(dt: Optional[datetime] = None) -> bytes:
-    if TIME_SYNC_OPCODE is None:
-        raise NotImplementedError(
-            "TIME_SYNC_OPCODE ist nicht konfiguriert (app/protocol.py). "
-            "Das genaue Byte-Praefix fuer den Uhrzeit-Sync-Befehl fehlt in der Spezifikation."
-        )
+    """A5 YY MM DD HH MM SS DOW CS."""
     dt = dt or datetime.now()
     payload = TIME_SYNC_OPCODE + _bcd_datetime_fields(dt)
     return payload + bytes([checksum(payload)])
@@ -153,37 +154,35 @@ def build_time_sync_command(dt: Optional[datetime] = None) -> bytes:
 
 def build_time_shaped_candidate(prefix: bytes, dt: Optional[datetime] = None) -> bytes:
     """Baut ein Kandidaten-Kommando im selben Feldschema wie
-    build_time_sync_command()/build_data_request_command() (Praefix +
-    aktuelle Datumsfelder YY MM DD HH MM SS DOW + Checksumme), aber mit
-    frei waehlbarem Praefix statt der (noch unbekannten) Konstante
-    TIME_SYNC_OPCODE. Zum Durchprobieren moeglicher Uhrzeit-Sync-Opcodes
-    ueber die Rohbefehl-Konsole im Dashboard, ohne Code aendern und die
-    App neu starten zu muessen."""
+    build_time_sync_command() (Praefix + aktuelle Datumsfelder YY MM DD HH
+    MM SS DOW + Checksumme), aber mit frei waehlbarem Praefix. Nicht mehr
+    fuer die Standard-Historie noetig (TIME_SYNC_OPCODE ist bekannt),
+    bleibt aber nuetzlich zum Experimentieren mit anderen, noch unbekannten
+    Kommandos ueber die Rohbefehl-Konsole im Dashboard."""
     dt = dt or datetime.now()
     payload = prefix + _bcd_datetime_fields(dt)
     return payload + bytes([checksum(payload)])
 
 
 def build_data_request_command(count: int, dt: Optional[datetime] = None) -> bytes:
+    """CC CC 01 09 00 00 00 YY MM DD HH MM SS NL NH CS 66 66.
+
+    CS wird ueber die Bytes ab "01 09" bis einschliesslich NH berechnet -
+    NICHT ueber die fuehrenden CC-CC-Bytes und NICHT ueber die
+    abschliessenden 66-66-Bytes. Anders als beim Uhrzeit-Sync-Kommando
+    enthaelt der Datumsteil hier KEIN Wochentags-Byte (nur YY MM DD HH MM SS,
+    6 statt 7 Bytes)."""
     dt = dt or datetime.now()
     count = max(0, min(count, 0xFFFF))
-    payload = DATA_REQUEST_OPCODE + _bcd_datetime_fields(dt) + bytes([count & 0xFF, (count >> 8) & 0xFF])
-    return payload + bytes([checksum(payload)])
+    date_fields = _bcd_datetime_fields(dt)[:-1]  # YY MM DD HH MM SS (ohne DOW)
+    inner = DATA_REQUEST_OPCODE + bytes([0x00, 0x00, 0x00]) + date_fields + bytes([count & 0xFF, (count >> 8) & 0xFF])
+    cs = checksum(inner)
+    return HISTORY_REQUEST_FRAME_PREFIX + inner + bytes([cs]) + HISTORY_REQUEST_FRAME_SUFFIX
 
 
 def get_session_init_command() -> bytes:
-    if SESSION_INIT_COMMAND is None:
-        raise NotImplementedError(
-            "SESSION_INIT_COMMAND ist nicht konfiguriert (app/protocol.py). "
-            "Das feste Byte-Kommando fuer die Session-Init fehlt in der Spezifikation."
-        )
     return SESSION_INIT_COMMAND
 
 
 def get_offset_command() -> bytes:
-    if OFFSET_COMMAND is None:
-        raise NotImplementedError(
-            "OFFSET_COMMAND ist nicht konfiguriert (app/protocol.py). "
-            "Das feste Byte-Kommando fuer den Offset-Befehl fehlt in der Spezifikation."
-        )
     return OFFSET_COMMAND

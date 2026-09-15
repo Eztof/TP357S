@@ -332,7 +332,7 @@ function updateDeviceLogPanels(devices) {
       csBtn.addEventListener("click", () => appendChecksum(hexInput));
       const exampleBtn = document.createElement("button");
       exampleBtn.textContent = "Beispiel einfügen (Datenanfrage)";
-      exampleBtn.title = "Fügt das einzige vollständig bekannte Kommando ein, fertig kodiert für jetzt";
+      exampleBtn.title = "Fügt das Datenanfrage-Kommando ein, fertig kodiert für jetzt";
       exampleBtn.addEventListener("click", () => insertExample(hexInput));
       writeRow.appendChild(hexInput);
       writeRow.appendChild(sendBtn);
@@ -359,10 +359,10 @@ function updateDeviceLogPanels(devices) {
       const hint = document.createElement("p");
       hint.className = "small";
       hint.textContent =
-        "Testidee 1: \"Beispiel einfügen\" → \"Rohbefehl senden\" → Feed beobachten " +
-        "(reicht die Datenanfrage allein, ohne die 3 unbekannten Vorbereitungs-Kommandos?). " +
-        "Testidee 2: Praefix (z.B. 0101, 0102, ... 0108 — Geschwister von 0109) eintragen, " +
-        "\"Zeit-Kandidat bauen\" → \"Rohbefehl senden\" → Feed beobachten.";
+        "Zum Debuggen: beliebige Hex-Bytes senden und die Antwort direkt im Feed unten beobachten. " +
+        "\"Beispiel einfügen\" liefert das fertig kodierte Datenanfrage-Kommando. " +
+        "\"Zeit-Kandidat bauen\" baut Praefix + aktuelles Datum + Checksumme fuer eigene Experimente " +
+        "mit anderen Kommando-Formen.";
       container.appendChild(hint);
 
       const pre = document.createElement("pre");
