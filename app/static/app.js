@@ -242,8 +242,7 @@ function renderDevices(devices) {
       <td class="small">${toLocalTime(d.last_status_change)}</td>
       <td class="mono">${
         d.last_live
-          ? `${d.last_live.temperature_c.toFixed(1)}°C ${d.last_live.humidity_pct}% byte6(vermutl. Batt.)=${d.last_live.battery_pct}` +
-            ` @ ${toLocalTime(d.last_live_ts)}`
+          ? `${d.last_live.temperature_c.toFixed(1)}°C ${d.last_live.humidity_pct}% @ ${toLocalTime(d.last_live_ts)}`
           : "-"
       }</td>
       <td class="error">${d.last_error ? escapeHtml(d.last_error) : ""}</td>

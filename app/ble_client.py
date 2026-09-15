@@ -388,6 +388,14 @@ class BleManager:
         self._history_state[mac] = hstate
         self.state.set_status(mac, "fetching_history")
 
+        # Skaliert mit der angefragten Anzahl: 500 Datensaetze kamen in der
+        # Praxis in ~0.1s zurueck (10 Notification-Pakete), das feste
+        # 30s-Fenster waere bei sehr grossen Anfragen (Geraet kann laut
+        # NL/NH-Feld bis zu 65535 Datensaetze liefern, ggf. Jahre an Daten)
+        # zu knapp. Grosszuegige, aber gedeckelte Marge statt eines fixen
+        # Werts, der nur fuer kleine Abrufe getestet wurde.
+        timeout = max(HISTORY_TIMEOUT_SECONDS, min(600, 10 + count / 200))
+
         async def send(label: str, payload: bytes) -> None:
             logger.debug("TX (%s) %s: %s", label, mac, payload.hex())
             self.state.append_raw_log(mac, {"kind": f"write-{label}", "hex": payload.hex(), "len": len(payload)})
@@ -400,12 +408,13 @@ class BleManager:
             await send("offset", protocol.get_offset_command())
             await send("data-request", protocol.build_data_request_command(count))
 
+            logger.debug("Warte bis zu %.0fs auf Verlaufsdaten von %s (angefragt: %d)", timeout, mac, count)
             try:
-                await asyncio.wait_for(hstate["done_event"].wait(), timeout=HISTORY_TIMEOUT_SECONDS)
+                await asyncio.wait_for(hstate["done_event"].wait(), timeout=timeout)
             except asyncio.TimeoutError:
                 logger.warning(
-                    "Timeout beim Warten auf Verlaufsdaten von %s, breche mit %d Datensaetzen ab",
-                    mac, len(hstate["buffer"]),
+                    "Timeout (%.0fs) beim Warten auf Verlaufsdaten von %s, breche mit %d Datensaetzen ab",
+                    timeout, mac, len(hstate["buffer"]),
                 )
                 self._finish_history(mac, hstate)
         finally:

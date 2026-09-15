@@ -139,6 +139,18 @@ Nähe kurz ausschalten/aus der Reichweite bringen und erneut scannen.
   die Datensätze selbst keinen Zeitstempel tragen, wird er anhand von
   `history_record_interval_seconds` (Annahme über das Aufnahmeintervall
   des Geräts, Standard: 60 s) rückwärts vom Abrufzeitpunkt geschätzt.
+  „Anzahl Datensätze“ geht bis **65535** (NL/NH im Datenanfrage-Kommando
+  sind 16-bit, das ist die tatsächliche Protokoll-Obergrenze, nicht
+  willkürlich gesetzt — manche Sensoren können deutlich mehr als ein paar
+  hundert Datensätze intern vorhalten). Das Warte-Timeout auf die Antwort
+  skaliert automatisch mit der angefragten Anzahl (bis zu 10 Minuten bei
+  sehr großen Anfragen) statt fix bei 30s zu liegen.
+  ⚠️ Wiederholtes Abrufen großer Verläufe kann zu Dopplungen in
+  `history_readings` führen: die geschätzten Zeitstempel werden bei jedem
+  Abruf neu rückwärts vom jeweils aktuellen Zeitpunkt berechnet, verschieben
+  sich also zwischen zwei Abrufen leicht — die `UNIQUE`-Dedupe in der
+  Datenbank (siehe `app/storage.py`) greift dadurch nicht zuverlässig bei
+  sich überlappenden Abrufen desselben Zeitraums.
 - **Umbenennen/Entfernen:** jederzeit im Dashboard möglich.
 - **CSV-Export:** `/api/export.csv?mac=<MAC>` bzw. Link im Dashboard
   (ohne `mac`-Parameter werden alle Sensoren exportiert).
@@ -173,7 +185,9 @@ Batteriestand zum selben Zeitpunkt) lässt sich das nicht verlässlich
 korrigieren — im Zweifel dem Wert nicht vertrauen. Mit der Rohbefehl-
 Konsole bzw. durch Beobachtung des Rohdaten-Feeds über einen längeren
 Zeitraum (`hex=...` in `/api/devices/<mac>/log`) lässt sich das bei Bedarf
-selbst weiter eingrenzen.
+selbst weiter eingrenzen. In der normalen Live-Wert-Anzeige (Geräte-Tabelle)
+wird der Wert deshalb gar nicht mehr angezeigt — nur noch im Rohdaten-Feed
+als Teil des dekodierten JSON, wo er als Rohwert klar erkennbar bleibt.
 
 ## Debugging / Absturz analysieren
 
