@@ -100,6 +100,30 @@ def install_asyncio_exception_handler(loop: asyncio.AbstractEventLoop) -> None:
     loop.set_exception_handler(handler)
 
 
+def start_log_queue_listener(log_queue) -> logging.handlers.QueueListener:
+    """Empfaengt Log-Records vom BLE-Worker-Kindprozess (siehe ble_worker.py)
+    ueber eine multiprocessing.Queue und schreibt sie mit den Handlern des
+    Hauptprozesses (Datei + Konsole) weg - so landet auch alles aus dem
+    isolierten Worker-Prozess in derselben data/app.log, ohne dass zwei
+    Prozesse denselben RotatingFileHandler gleichzeitig beschreiben (das
+    waere nicht prozesssicher)."""
+    root = logging.getLogger()
+    listener = logging.handlers.QueueListener(log_queue, *root.handlers, respect_handler_level=True)
+    listener.start()
+    return listener
+
+
+def setup_worker_logging(log_queue, level: str = "DEBUG") -> None:
+    """Im BLE-Worker-Kindprozess aufzurufen (statt setup_logging): schickt
+    alle Log-Records ueber log_queue an den Hauptprozess, statt selbst eine
+    Logdatei zu schreiben."""
+    root = logging.getLogger()
+    root.setLevel(getattr(logging, level.upper(), logging.DEBUG))
+    root.handlers.clear()
+    root.addHandler(logging.handlers.QueueHandler(log_queue))
+    _install_crash_hooks()
+
+
 def tail_log_file(log_path: Path, max_lines: int = 300) -> str:
     if not log_path.exists():
         return "(noch keine Logdatei vorhanden)"

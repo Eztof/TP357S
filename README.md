@@ -25,7 +25,8 @@ TP357S/
   config.example.json     # Vorlage, wird beim ersten Start zu config.json kopiert
   app/
     protocol.py           # Dekodierung/Kodierung des TP357S-Bluetooth-Protokolls
-    ble_client.py          # BLE-Scan + Verbindungen (läuft im Hintergrund-Thread)
+    ble_client.py          # BleManager: startet/überwacht den BLE-Worker-Kindprozess, Auto-Sync-Scheduler
+    ble_worker.py            # läuft im isolierten Kindprozess: die eigentliche bleak-Kommunikation
     devices.py              # Liste gekoppelter Sensoren (data/devices.json)
     storage.py                # SQLite-Speicherung (Live-Werte + Historie, je Sensor)
     state.py                   # geteilter Programmstatus (alle Sensoren, Scan, Rohdaten-Logs)
@@ -216,74 +217,84 @@ asyncio-Event-Loop des BLE-Threads:
 Im Dashboard direkt einsehbar, ohne auf die Festplatte zu müssen:
 
 - **„Server“-Bereich:** Config-Dump (`/api/config`), Debug-Dump
-  (`/api/debug` — Loop-Status, lebende Threads/Tasks, verbundene Clients,
-  Uptime, bleak-Version) und ein live nachladendes Log-Fenster
-  (`/api/logs?lines=N`, Standard alle 2 s).
+  (`/api/debug` — Worker-PID, Worker-Status/Exitcode, Anzahl automatischer
+  Neustarts, verbundene Clients, laufende Verlaufsabrufe, Uptime) und ein
+  live nachladendes Log-Fenster (`/api/logs?lines=N`, Standard alle 2 s).
 - Falls die App komplett abgestürzt ist (Prozess weg, Dashboard nicht mehr
   erreichbar): `data/app.log` direkt öffnen — der letzte Eintrag vor dem
   Abbruch zeigt in aller Regel die Ursache. `start.bat`/`start.sh` schließen
   das Konsolenfenster nicht automatisch, daher steht der Traceback i. d. R.
   auch dort.
-Kein Auto-Neustart bei Absturz — bewusst nicht: `start.bat`/`start.sh`
-starten die App genau einmal, das Konsolenfenster bleibt danach offen
-stehen (`pause`), damit ein Absturz-Traceback (falls vorhanden) sichtbar
-bleibt statt weggescrollt zu werden.
 
-### Bekanntes Problem: Prozess stirbt beim Verbinden, ganz ohne Traceback
+Kein Auto-Neustart der **gesamten App** bei Absturz — bewusst nicht:
+`start.bat`/`start.sh` starten die App genau einmal, das Konsolenfenster
+bleibt danach offen stehen (`pause`), damit ein Absturz-Traceback (falls
+vorhanden) sichtbar bleibt statt weggescrollt zu werden. Der isolierte
+BLE-Worker-Prozess (siehe unten) wird davon unabhängig automatisch
+neugestartet — das betrifft nur den BLE-Teil, nicht den Webserver/das
+Dashboard selbst.
 
-Falls im Log (oder in der Konsole) **kein** Python-Traceback erscheint,
-sondern der Prozess beim Verbinden zu einem Sensor (`Verbinde zu ...`)
-einfach komplett verschwindet: Das ist **kein** normaler Python-Fehler —
-sonst hätten ihn die Crash-Hooks oben zuverlässig geloggt. Es handelt sich
-um einen **nativen Absturz** (Access Violation) im Windows-Bluetooth-
-Backend, auf das `bleak` unter Windows zwingend angewiesen ist (die
-`winrt-*`-Pakete). Ein solcher Absturz reißt den kompletten Python-Prozess
-sofort runter, bevor überhaupt eine Python-Exception geworfen werden kann
-— dagegen kann kein Try/Except und kein Logging von innen etwas ausrichten.
-Im Rohdaten-Feed des Geräts (`/api/devices/<mac>/log`) steht trotzdem der
-letzte erreichte Schritt (`rufe client.connect() auf` vs. `client.connect()
-zurueckgekehrt` vs. `aktiviere Notify`), das grenzt zumindest ein, in
-welchem Aufruf es gestorben ist.
+### Architektur: BLE läuft in einem isolierten, überwachten Kindprozess
 
-Angewendete Mitigationen (`app/ble_client.py`):
+**Hintergrund:** `bleak`s WinRT-Backend stürzt auf Windows/Python 3.14
+reproduzierbar mit einer **nativen Access Violation** ab (kein Python-
+Traceback, kein `sys.excepthook`, kein `threading.excepthook`, kein
+asyncio-Exception-Handler kann das abfangen — der Prozess stirbt sofort,
+mitten im Aufruf). Mehrere reine Softwarefixes wurden ausprobiert
+(`use_cached_services=False`, expliziter Pre-Connect-Scan) — der Cache-Fix
+ist ein echter, dokumentierter Workaround und bleibt aktiv, hat den Absturz
+aber nicht vollständig behoben; der Pre-Connect-Scan wurde nach echten
+Log-Auswertungen wieder entfernt, weil er den Absturz nachweislich
+*häufiger* statt seltener gemacht hat (mehr WinRT-Scanner-Objekt-Zyklen).
 
-1. **`_resolve_device()`:** Vor jedem Verbindungsaufbau wird das Gerät erst
-   gezielt per `BleakScanner.find_device_by_address(mac, timeout=12.0)`
-   gesucht. Übergibt man `BleakClient` nur die MAC-Adresse als String,
-   macht bleak/winrt intern selbst einen undurchsichtigen, oft zu kurzen
-   Scan zur Auflösung — bei einem Gerät, das (wie der TP357S offenbar)
-   nicht durchgehend wirbt, kommt dann `BleakDeviceNotFoundError`, obwohl
-   das Gerät da ist (genau das Verhalten, das den ersten Verbindungsversuch
-   im Testlauf zuverlässig als sauber geloggte Exception statt als
-   Absturz beendet hat). Wird das `BLEDevice`-Objekt gefunden, wird es
-   direkt an `BleakClient` übergeben statt nur der Adresse.
-2. **`_build_client()`:** `winrt=dict(use_cached_services=False)` schaltet
-   den WinRT-GATT-Geräte-Cache ab (verifiziert gegen `bleak`s
-   `WinRTClientArgs`/`BleakClientWinRT`: steuert
-   `BluetoothCacheMode.Uncached` vs. `Cached` bei der Service-Discovery).
-   Ein korrupter Geräte-Cache im Windows-Bluetooth-Stack ist eine bekannte
-   Ursache für genau so einen Absturz. Zusätzlich ein expliziter
-   `timeout=20.0` statt bleaks Default.
-3. Jeder Schritt (Suche, Connect-Aufruf, Notify aktivieren) wird einzeln
-   in den Rohdaten-Feed des Geräts geloggt — falls es doch wieder
-   abstürzt, zeigt `/api/devices/<mac>/log`, wie weit es diesmal kam.
+Statt weiter reine Softwarefixes zu suchen, läuft die komplette
+`bleak`-Kommunikation seitdem in einem **eigenen Kindprozess**
+(`app/ble_worker.py`, gestartet über Pythons `multiprocessing`, spawn-
+Methode). Stirbt dieser Prozess — aus welchem Grund auch immer, inklusive
+eines nativen Absturzes ganz ohne Traceback — bemerkt der Elternprozess
+(`BleManager` in `app/ble_client.py`) das über einen Supervisor-Thread
+(`proc.is_alive()`/`proc.exitcode`, Poll-Intervall 2 s) und startet
+automatisch einen neuen Worker-Prozess, der sich wieder mit allen bekannten
+Geräten verbindet. Webserver, Dashboard, SQLite-Datenbank und der Firebase-
+Upload laufen im Elternprozess weiter und sind von einem Worker-Absturz
+nicht betroffen — nur die betroffenen Geräte zeigen kurzzeitig den Status
+`error` mit einer entsprechenden Meldung, bis der neue Worker wieder
+verbunden hat.
 
-Falls der Absturz trotzdem wieder auftritt (auf **Python 3.14** ist das
-nicht ausgeschlossen — die `winrt`-Bindungen sind dafür noch vergleichsweise
-neu und ihr Kompatibilitätsstand kann sich mit jedem Patch-Release ändern):
+Kommunikation zwischen Eltern- und Worker-Prozess läuft ausschließlich über
+zwei `multiprocessing.Queue` (Kommandos raus, Ereignisse rein) — der Worker
+hält selbst keinerlei überlebenswichtigen Zustand (kein SQLite, kein
+AppState); jedes empfangene Rohpaket, jeder Statuswechsel und jeder Fehler
+wird als Ereignis an den Elternprozess gemeldet, der die Persistenz
+übernimmt. Das Worker-eigene Logging läuft über eine dritte Queue
+(`logging.handlers.QueueHandler`/`QueueListener`) in dieselbe `data/app.log`
+wie der Rest der App — zwei Prozesse dürfen nicht gleichzeitig in denselben
+`RotatingFileHandler` schreiben, das wäre nicht prozesssicher.
+
+**Wichtige Falle, die dabei gefunden und behoben wurde:** Stirbt ein
+Kindprozess, während sein Lese-Thread in `Queue.get()` blockiert war, hält
+er dabei intern einen prozessübergreifenden Lock (POSIX-Semaphore) — ein
+harter Abbruch (`os._exit()`/eine native Access Violation, kein normales
+`Queue.close()`) gibt diesen Lock **nie wieder frei**. Ein neuer Prozess,
+der dieselbe Queue weiterverwendet, würde dann selbst bei seinem allerersten
+`get()` für immer blockieren, ohne je wieder auf Kommandos zu reagieren —
+genau das wurde beim Testen mit einem simulierten Absturz reproduziert (der
+Worker wurde sauber neugestartet, hat aber nie wieder verbunden). Die
+Lösung: bei jedem (Neu-)Start werden **frische** Queues (Kommando, Ereignis,
+Log) samt frischem Event-Reader-Thread erstellt, nie die alten
+wiederverwendet.
+
+Falls der native Absturz trotzdem weiterhin auftritt (auf **Python 3.14**
+ist das nicht ausgeschlossen — die `winrt`-Bindungen sind dafür noch
+vergleichsweise neu): das ist jetzt kein Blocker mehr für die App als
+Ganzes, nur noch eine kurze Verbindungsunterbrechung pro Vorfall
+(Neustart-Backoff: 5 Sekunden). Zusätzlich weiterhin hilfreich:
 
 - `pip install --upgrade bleak` in der `venv` (neuere `winrt`-Unterpakete
   können Bugfixes enthalten, die `requirements.txt` nicht automatisch zieht).
-- Prüfen, ob Windows-Update / aktuelle Bluetooth-Treiber verfügbar sind —
-  einige dieser WinRT-Abstürze sind tatsächlich Treiberbugs, die nur über
-  die WinRT-API sichtbar werden.
+- Prüfen, ob Windows-Update / aktuelle Bluetooth-Treiber verfügbar sind.
 - Den Sensor einmal reproduzierbar über die Windows-Bluetooth-Einstellungen
-  koppeln/entkoppeln, bevor er hier hinzugefügt wird — das kann einen
-  hängengebliebenen internen Windows-Geräte-Cache zurücksetzen, unabhängig
-  von `use_cached_services`.
-- Als letzter Ausweg (nicht erforderlich, nur falls nichts davon hilft):
-  Python 3.11/3.12 sind für `bleak`/`winrt` unter Windows am längsten im
-  Einsatz und am besten getestet.
+  koppeln/entkoppeln, bevor er hier hinzugefügt wird.
 
 ## Verlaufs-Protokoll (`app/protocol.py`)
 

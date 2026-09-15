@@ -1,64 +1,68 @@
 """Bluetooth-LE-Anbindung an beliebig viele ThermoPro-TP357S-Sensoren.
 
-Laeuft in einem eigenen Thread mit eigener asyncio-Event-Loop (bleak ist
-async, der Flask-Server laeuft in seinem eigenen Thread). Pro Geraet (MAC-
-Adresse) laeuft eine eigene Verbindungs-Task nebenlaeufig in derselben
-Event-Loop; zusaetzlich kann jederzeit ein BLE-Scan gestartet werden.
+WICHTIG (Architektur seit der Prozess-Isolation): Die eigentliche
+bleak/BLE-Kommunikation laeuft NICHT mehr in diesem Prozess, sondern in
+einem separaten Kindprozess (siehe app/ble_worker.py), gestartet und
+ueberwacht von der Klasse BleManager hier. Grund: bleaks WinRT-Backend
+stuerzt auf Windows/Python 3.14 reproduzierbar mit einer nativen Access
+Violation ab (kein Python-Traceback moeglich). In einem eigenen
+Kindprozess nimmt so ein Absturz nur den BLE-Teil mit - Webserver,
+Dashboard und alle bereits gespeicherten Daten bleiben unberuehrt. Der
+BleManager erkennt einen toten Worker-Prozess (Supervisor-Thread,
+proc.is_alive()) und startet automatisch einen neuen, der sich wieder mit
+allen bekannten Geraeten verbindet.
+
+BleManager <-> Worker-Prozess reden ausschliesslich ueber zwei
+multiprocessing.Queue (Kommandos raus, Ereignisse rein). BleManager selbst
+haelt keinerlei bleak-Objekte mehr, nur noch Buchfuehrung (welche MACs
+sind laut letztem Status "connected", welche Verlaufsabrufe laufen gerade)
+und uebernimmt weiterhin die Persistenz (AppState, Storage) sowie den
+Auto-Sync-Scheduler (periodischer Verlaufs-Abruf mit Luecken-Erkennung).
 
 Zwei Arten von Geraeten:
-- "paediert" (persist=True): dauerhaft in data/devices.json gespeichert,
+- "gekoppelt" (persist=True): dauerhaft in data/devices.json gespeichert,
   wird bei jedem Start automatisch wieder verbunden.
 - "Probe"/Live-Test (persist=False): nur zum Reinschauen, wird NICHT in
-  devices.json gespeichert; ueber /api/probe/<mac>/promote kann eine
-  laufende Probe jederzeit in eine dauerhafte Kopplung umgewandelt werden.
+  devices.json gespeichert.
 
 Alles, was ueber die Bluetooth-Verbindung laeuft (jedes empfangene Rohpaket,
-jedes gesendete Kommando, jeder Verbindungsstatuswechsel, jeder Fehler mit
-vollem Traceback) wird sowohl ins Logfile geschrieben als auch in den
-Rohdaten-Puffer des jeweiligen Geraets (state.append_raw_log) - sichtbar im
-Dashboard und ueber /api/devices/<mac>/log.
+jedes gesendete Kommando, jeder Verbindungsstatuswechsel, jeder Fehler)
+kommt als Ereignis vom Worker-Prozess rein und wird ins Logfile geschrieben
+sowie in den Rohdaten-Puffer des jeweiligen Geraets (state.append_raw_log) -
+sichtbar im Dashboard und ueber /api/devices/<mac>/log.
 """
-import asyncio
-import functools
-import importlib.metadata
 import logging
-import platform
-import sys
+import multiprocessing
 import threading
 import time
+import uuid
 from concurrent.futures import Future
 from datetime import datetime, timezone
-from typing import Dict, Optional
-
-from bleak import BleakClient, BleakScanner
+from typing import Dict, Optional, Set
 
 from . import protocol
+from .ble_worker import worker_entrypoint
 from .config import AppConfig
 from .devices import DeviceStore
-from .logging_setup import install_asyncio_exception_handler
+from .logging_setup import start_log_queue_listener
 from .state import AppState
 from .storage import Storage
 
 logger = logging.getLogger(__name__)
-
-HISTORY_IDLE_TIMEOUT_SECONDS = 20  # Abbruch, wenn so lange kein neues Paket mehr kam
-HISTORY_MIN_OVERALL_TIMEOUT_SECONDS = 120
-HISTORY_MAX_OVERALL_TIMEOUT_SECONDS = 1800  # Sicherheitsnetz, falls die Verbindung komplett haengt
 
 AUTO_SYNC_TICK_SECONDS = 30
 AUTO_SYNC_GAP_MARGIN_RECORDS = 10  # Sicherheitsmarge oben drauf, falls das Intervall nicht exakt stimmt
 SYNC_CHECK_TEMP_TOLERANCE_C = 1.0
 SYNC_CHECK_HUMIDITY_TOLERANCE_PCT = 6
 
+WORKER_POLL_SECONDS = 2  # wie oft der Supervisor-Thread proc.is_alive() prueft
+WORKER_RESTART_BACKOFF_SECONDS = 5  # Pause vor dem Neustart, falls der Worker sofort wieder abstuerzt
+HISTORY_FUTURE_TIMEOUT_SECONDS = 1800 + 60  # Rueckfallnetz; der Worker selbst begrenzt frueher (siehe ble_worker.py)
 
-def _bleak_version() -> str:
-    try:
-        return importlib.metadata.version("bleak")
-    except Exception:  # noqa: BLE001
-        return "unbekannt"
-
-
-BLEAK_VERSION = _bleak_version()
+# spawn statt fork: auf Windows sowieso die einzige Option, auf Linux fuer
+# konsistentes/vorhersagbares Verhalten (kein Vererben von Threads/asyncio-
+# Zustand aus dem Elternprozess in den Kindprozess) ebenfalls bewusst erzwungen.
+MP_CTX = multiprocessing.get_context("spawn")
 
 
 class BleManager:
@@ -69,71 +73,327 @@ class BleManager:
         self.devices = devices
         self.started_at = time.time()
 
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._thread: Optional[threading.Thread] = None
-        self._ready = threading.Event()
+        self._lock = threading.Lock()
+        self._known_devices: Dict[str, dict] = {}  # mac -> {"name", "is_probe"}
+        self._connected_macs: Set[str] = set()
+        self._history_in_progress: Set[str] = set()
+        self._pending_history: Dict[str, Future] = {}
 
-        self._clients: Dict[str, BleakClient] = {}
-        self._device_tasks: Dict[str, "asyncio.Task"] = {}
-        self._history_state: Dict[str, dict] = {}
+        self._proc_lock = threading.Lock()
+        self._proc: Optional["multiprocessing.process.BaseProcess"] = None
+        self._restart_count = 0
+        self._last_hello: Optional[dict] = None
+        self._shutdown_requested = False
 
-        logger.info(
-            "BleManager erstellt. Python=%s Plattform=%s bleak=%s",
-            sys.version.replace("\n", " "), platform.platform(), BLEAK_VERSION,
-        )
+        self._cmd_queue = None
+        self._event_queue = None
+        self._log_queue = None
+        self._log_listener = None
 
-    # -- Lifecycle -------------------------------------------------------------
+    # -- Lifecycle ---------------------------------------------------------------
 
     def start(self) -> None:
-        self._thread = threading.Thread(target=self._run_loop, name="ble-loop", daemon=True)
-        self._thread.start()
-        ready = self._ready.wait(timeout=5)
-        logger.info("BLE-Event-Loop-Thread gestartet (bereit=%s)", ready)
+        threading.Thread(target=self._supervisor_loop, name="ble-supervisor", daemon=True).start()
+        self._spawn_worker()
+        logger.info("BLE-Supervisor gestartet (Worker-Prozess laeuft isoliert, wird automatisch neugestartet falls er abstuerzt)")
 
-    def _run_loop(self) -> None:
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        install_asyncio_exception_handler(self._loop)
-        self._ready.set()
-        logger.debug("asyncio-Event-Loop laeuft jetzt (run_forever)")
-        try:
-            self._loop.run_forever()
-        except Exception:
-            logger.exception("BLE-Event-Loop ist mit einer Exception abgestuerzt")
-            raise
-        finally:
-            logger.warning("BLE-Event-Loop wurde beendet (run_forever() ist zurueckgekehrt)")
+    def _spawn_worker(self) -> None:
+        """Erstellt bei JEDEM (Neu-)Start frische Queues (Kommando/Ereignis/Log)
+        und einen frischen Event-Reader-Thread, statt die alten wiederzuverwenden.
 
-    def _run_coro(self, coro) -> Future:
-        if not self._loop:
-            raise RuntimeError("BLE-Event-Loop laeuft noch nicht.")
-        return asyncio.run_coroutine_threadsafe(coro, self._loop)
+        Grund (per Test reproduziert, kein theoretisches Risiko): stirbt ein
+        Kindprozess waehrend er in Queue.get() blockiert (dort haelt er
+        intern einen prozessuebergreifenden POSIX-Semaphore/Lock, solange
+        er auf Daten wartet), bleibt dieser Lock nach einem harten Abbruch
+        (os._exit()/Access Violation - kein normales Queue.close()) fuer
+        immer im "belegt"-Zustand haengen. Ein neuer Prozess, der dieselbe
+        Queue weiterverwendet, wuerde dann selbst beim ersten get() ewig
+        blockieren - das Symptom war genau das: der Worker-Prozess wurde
+        nach einem simulierten Absturz zwar sauber neugestartet, hat aber
+        nie wieder auf Kommandos vom Elternprozess reagiert. Frische Queues
+        pro (Neu-)Start umgehen das Problem vollstaendig."""
+        cmd_queue = MP_CTX.Queue()
+        event_queue = MP_CTX.Queue()
+        log_queue = MP_CTX.Queue()
+        config_dict = {
+            "reconnect_delay_seconds": self.config.reconnect_delay_seconds,
+            "scan_duration_seconds": self.config.scan_duration_seconds,
+            "log_level": self.config.log_level,
+        }
+
+        with self._proc_lock:
+            self._cmd_queue = cmd_queue
+            self._event_queue = event_queue
+            old_listener = self._log_listener
+            self._log_queue = log_queue
+            self._log_listener = start_log_queue_listener(log_queue)
+
+            threading.Thread(
+                target=self._event_reader_loop, args=(event_queue,), name="ble-event-reader", daemon=True
+            ).start()
+
+            proc = MP_CTX.Process(
+                target=worker_entrypoint,
+                args=(cmd_queue, event_queue, log_queue, config_dict),
+                name="ble-worker",
+                daemon=True,
+            )
+            proc.start()
+            self._proc = proc
+            logger.info("BLE-Worker-Prozess gestartet (pid=%s, restart_count=%d)", proc.pid, self._restart_count)
+
+        if old_listener is not None:
+            old_listener.stop()
+
+        with self._lock:
+            known = dict(self._known_devices)
+        for mac, info in known.items():
+            self._send_cmd({"type": "add_device", "mac": mac, "name": info["name"]})
+
+    def _supervisor_loop(self) -> None:
+        while True:
+            time.sleep(WORKER_POLL_SECONDS)
+            if self._shutdown_requested:
+                return
+            with self._proc_lock:
+                proc = self._proc
+            if proc is None or proc.is_alive():
+                continue
+            exitcode = proc.exitcode
+            logger.critical(
+                "BLE-Worker-Prozess (pid=%s) ist beendet/abgestuerzt (exitcode=%s) - "
+                "das Dashboard bleibt erreichbar, starte automatisch einen neuen Worker-Prozess ...",
+                proc.pid, exitcode,
+            )
+            self._on_worker_died(exitcode)
+            self._restart_count += 1
+            time.sleep(WORKER_RESTART_BACKOFF_SECONDS)
+            self._spawn_worker()
+
+    def _on_worker_died(self, exitcode: Optional[int]) -> None:
+        with self._lock:
+            self._connected_macs.clear()
+            self._history_in_progress.clear()
+            known_macs = list(self._known_devices.keys())
+            pending = dict(self._pending_history)
+            self._pending_history.clear()
+
+        for mac in known_macs:
+            # set_error() setzt den Status ohnehin auf "error" (siehe state.py),
+            # ein zusaetzliches set_status(...) davor waere nur eine Zwischenstufe,
+            # die sofort wieder ueberschrieben wird - die aussagekraeftige
+            # Fehlermeldung landet in last_error und im Rohdaten-Log unten.
+            self.state.set_error(mac, f"BLE-Worker-Prozess abgestuerzt (exitcode={exitcode})")
+            self.state.append_raw_log(mac, {
+                "kind": "error",
+                "note": (
+                    f"BLE-Worker-Prozess abgestuerzt (exitcode={exitcode}, vermutlich nativer WinRT/"
+                    f"bleak-Fehler). Automatischer Neustart des isolierten Worker-Prozesses laeuft, "
+                    f"die Verbindung wird danach automatisch wiederhergestellt. Dashboard/gespeicherte "
+                    f"Daten sind davon nicht betroffen."
+                ),
+            })
+        for req_id, fut in pending.items():
+            if not fut.done():
+                fut.set_exception(RuntimeError(f"BLE-Worker-Prozess abgestuerzt (exitcode={exitcode})"))
+
+    def _send_cmd(self, cmd: dict) -> None:
+        if self._cmd_queue is None:
+            raise RuntimeError("BLE-Manager ist noch nicht gestartet (start() nicht aufgerufen).")
+        self._cmd_queue.put(cmd)
+
+    # -- Ereignisse vom Worker-Prozess --------------------------------------------
+
+    def _event_reader_loop(self, event_queue) -> None:
+        """Liest genau EINE feste Queue-Instanz (siehe _spawn_worker fuer die
+        Begruendung, warum bei jedem Worker-Neustart eine frische Queue samt
+        frischem Reader-Thread erstellt wird, statt self._event_queue zu
+        lesen - das koennte inzwischen schon durch einen Neustart ersetzt
+        worden sein)."""
+        while True:
+            try:
+                event = event_queue.get()
+            except (EOFError, OSError):
+                return
+            try:
+                self._handle_event(event)
+            except Exception:  # noqa: BLE001
+                logger.exception("Fehler bei der Verarbeitung eines Worker-Ereignisses: %r", event)
+
+    def _handle_event(self, event: dict) -> None:
+        t = event.get("type")
+        if t == "hello":
+            self._last_hello = event
+            logger.info(
+                "BLE-Worker-Prozess meldet sich: pid=%s bleak=%s python=%s",
+                event.get("pid"), event.get("bleak_version"), event.get("python_version"),
+            )
+        elif t == "status":
+            mac, status = event["mac"], event["status"]
+            self.state.set_status(mac, status)
+            with self._lock:
+                if status == "connected":
+                    self._connected_macs.add(mac)
+                else:
+                    self._connected_macs.discard(mac)
+        elif t == "error":
+            self.state.set_error(event["mac"], event.get("message"))
+        elif t == "raw_log":
+            self.state.append_raw_log(event["mac"], event["entry"])
+        elif t == "live_reading":
+            mac = event["mac"]
+            reading = protocol.Reading(**event["reading"])
+            self.state.set_live_reading(mac, reading)
+            self.storage.insert_live_reading(mac, reading)
+        elif t == "history_result":
+            self._on_history_result(event)
+        elif t == "history_error":
+            self._on_history_error(event)
+        elif t == "scanning":
+            self.state.set_scanning(event["value"])
+        elif t == "scan_result":
+            self.state.set_scan_results(event["results"])
+            self.state.set_scan_error(None)
+            logger.info("Scan abgeschlossen: %d Geraete gefunden", len(event["results"]))
+        elif t == "scan_error":
+            self.state.set_scan_results([])
+            self.state.set_scan_error(event.get("message"))
+        else:
+            logger.warning("Unbekanntes Ereignis vom Worker-Prozess: %r", event)
+
+    def _on_history_result(self, event: dict) -> None:
+        mac = event["mac"]
+        req_id = event["req_id"]
+        records = [protocol.Reading(**r) for r in event["records"]]
+        clean = event["clean"]
+
+        count = self.storage.insert_history_readings(
+            mac, records, interval_seconds=self.config.history_record_interval_seconds
+        )
+        self.state.set_history_result(mac, count, clean=clean)
+        with self._lock:
+            still_connected = mac in self._connected_macs
+        self.state.set_status(mac, "connected" if still_connected else "disconnected")
+        self.state.append_raw_log(mac, {
+            "kind": "info",
+            "note": f"Verlaufsabruf abgeschlossen: {count} Datensaetze ({'sauber' if clean else 'ABGEBROCHEN, vermutlich unvollstaendig'})",
+        })
+        logger.info("Verlaufsabruf fuer %s abgeschlossen: %d Datensaetze (clean=%s)", mac, count, clean)
+
+        trailing = event.get("trailing_live")
+        if trailing:
+            reading = protocol.Reading(**trailing)
+            self.state.set_live_reading(mac, reading)
+            self.storage.insert_live_reading(mac, reading)
+
+        with self._lock:
+            self._history_in_progress.discard(mac)
+            fut = self._pending_history.pop(req_id, None)
+        if fut is not None and not fut.done():
+            fut.set_result({"count": count, "clean": clean})
+
+    def _on_history_error(self, event: dict) -> None:
+        mac = event["mac"]
+        req_id = event["req_id"]
+        message = event.get("message") or "Verlaufsabruf fehlgeschlagen"
+        logger.error("Verlaufsabruf fuer %s fehlgeschlagen: %s", mac, message)
+        self.state.set_error(mac, message)
+        with self._lock:
+            self._history_in_progress.discard(mac)
+            still_connected = mac in self._connected_macs
+            fut = self._pending_history.pop(req_id, None)
+        self.state.set_status(mac, "connected" if still_connected else "disconnected")
+        if fut is not None and not fut.done():
+            fut.set_exception(RuntimeError(message))
+
+    def debug_snapshot(self) -> dict:
+        with self._proc_lock:
+            proc = self._proc
+        with self._lock:
+            connected = sorted(self._connected_macs)
+            in_progress = sorted(self._history_in_progress)
+            known = sorted(self._known_devices.keys())
+        return {
+            "worker_pid": proc.pid if proc else None,
+            "worker_alive": bool(proc and proc.is_alive()),
+            "worker_exitcode": proc.exitcode if proc else None,
+            "worker_restart_count": self._restart_count,
+            "worker_hello": self._last_hello,
+            "connected_clients": connected,
+            "known_devices": known,
+            "history_in_progress": in_progress,
+            "uptime_seconds": round(time.time() - self.started_at, 1),
+        }
+
+    # -- Geraete koppeln/entfernen -------------------------------------------------
+
+    def add_device(self, mac: str, name: str, is_probe: bool = False) -> None:
+        mac = mac.upper()
+        logger.info("Fuege Geraet hinzu: mac=%s name=%r is_probe=%s", mac, name, is_probe)
+        self.state.ensure_device(mac, name, is_probe=is_probe)
+        with self._lock:
+            self._known_devices[mac] = {"name": name, "is_probe": is_probe}
+        self._send_cmd({"type": "add_device", "mac": mac, "name": name})
+
+    def remove_device(self, mac: str) -> None:
+        mac = mac.upper()
+        logger.info("Entferne Geraet: mac=%s", mac)
+        self.state.remove_device(mac)
+        with self._lock:
+            self._known_devices.pop(mac, None)
+            self._connected_macs.discard(mac)
+        self._send_cmd({"type": "remove_device", "mac": mac})
+
+    # -- Scannen --------------------------------------------------------------------
+
+    def scan(self, duration: Optional[int] = None) -> None:
+        duration = duration or self.config.scan_duration_seconds
+        logger.info("Starte BLE-Scan (Dauer=%ss)", duration)
+        self._send_cmd({"type": "scan", "duration": duration})
+
+    # -- Verlaufsabruf ----------------------------------------------------------------
+
+    def request_history(self, mac: str, count: int = 500) -> Future:
+        mac = mac.upper()
+        logger.info("Fordere Verlauf an: mac=%s count=%d", mac, count)
+        req_id = uuid.uuid4().hex
+        fut: Future = Future()
+        with self._lock:
+            self._history_in_progress.add(mac)
+            self._pending_history[req_id] = fut
+        self._send_cmd({"type": "request_history", "mac": mac, "count": count, "req_id": req_id})
+        return fut
+
+    # -- Rohbefehl senden ---------------------------------------------------------------
+
+    def write_raw(self, mac: str, data: bytes) -> None:
+        mac = mac.upper()
+        logger.info("Sende Rohbefehl an %s: %s", mac, data.hex())
+        self._send_cmd({"type": "write_raw", "mac": mac, "hex": data.hex()})
+
+    # -- Auto-Sync (periodischer Verlaufs-Abruf mit Luecken-Erkennung) -------------------
 
     def start_auto_sync(self) -> None:
-        """Startet den Auto-Sync-Scheduler (periodischer Verlaufs-Abruf mit
-        Luecken-Erkennung fuer alle Geraete, bei denen das im Dashboard
-        eingeschaltet ist). Einmalig nach start() aufzurufen."""
-        self._run_coro(self._auto_sync_loop())
+        threading.Thread(target=self._auto_sync_loop, name="ble-auto-sync", daemon=True).start()
 
-    async def _auto_sync_loop(self) -> None:
+    def _auto_sync_loop(self) -> None:
         logger.info("Auto-Sync-Scheduler gestartet (Tick=%ds)", AUTO_SYNC_TICK_SECONDS)
         while True:
             try:
-                await self._auto_sync_tick()
+                self._auto_sync_tick()
             except Exception:  # noqa: BLE001
                 logger.exception("Fehler im Auto-Sync-Scheduler-Tick")
-            await asyncio.sleep(AUTO_SYNC_TICK_SECONDS)
+            time.sleep(AUTO_SYNC_TICK_SECONDS)
 
-    async def _auto_sync_tick(self) -> None:
+    def _auto_sync_tick(self) -> None:
         now = datetime.now(timezone.utc)
         for entry in self.state.list_auto_sync_devices():
             mac = entry["mac"]
-            if mac not in self._clients:
-                continue  # nicht verbunden - beim naechsten Tick erneut versuchen
-
-            hstate = self._history_state.get(mac)
-            if hstate and hstate.get("in_progress"):
-                continue  # laeuft schon (z.B. manueller Abruf gerade aktiv)
+            with self._lock:
+                connected = mac in self._connected_macs
+                busy = mac in self._history_in_progress
+            if not connected or busy:
+                continue  # nicht verbunden oder laeuft schon (z.B. manueller Abruf) - naechster Tick
 
             last_attempt = entry["last_auto_sync_at"]
             interval = entry["auto_sync_interval_seconds"]
@@ -142,9 +402,9 @@ class BleManager:
                 if elapsed < interval:
                     continue
 
-            await self._run_auto_sync_for_device(mac, entry["last_synced_ts"], interval, now)
+            self._run_auto_sync_for_device(mac, entry["last_synced_ts"], interval, now)
 
-    async def _run_auto_sync_for_device(
+    def _run_auto_sync_for_device(
         self, mac: str, last_synced_ts: Optional[str], interval_seconds: int, now: datetime
     ) -> None:
         record_interval = max(1, self.config.history_record_interval_seconds)
@@ -162,8 +422,9 @@ class BleManager:
         )
         self.state.append_raw_log(mac, {"kind": "info", "note": f"Auto-Sync: fordere {count} Datensaetze an (Luecke {gap_seconds:.0f}s)"})
 
+        fut = self.request_history(mac, count)
         try:
-            result = await self._request_history_async(mac, count)
+            result = fut.result(timeout=HISTORY_FUTURE_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Auto-Sync fuer %s fehlgeschlagen", mac)
             self.state.set_auto_sync_result(mac, {"ok": False, "error": str(exc), "requested": count})
@@ -213,397 +474,3 @@ class BleManager:
             "note": f"Sync-Check: {'OK' if ok else 'ABWEICHUNG'} (dT={temp_diff:.2f}C dH={hum_diff:.2f}%)",
         })
         logger.info("Sync-Check fuer %s: %s (dT=%.2f dH=%.2f)", mac, "OK" if ok else "ABWEICHUNG", temp_diff, hum_diff)
-
-    def debug_snapshot(self) -> dict:
-        return {
-            "loop_running": bool(self._loop and self._loop.is_running()),
-            "thread_alive": bool(self._thread and self._thread.is_alive()),
-            "connected_clients": sorted(self._clients.keys()),
-            "active_device_tasks": {mac: not task.done() for mac, task in self._device_tasks.items()},
-            "history_in_progress": [mac for mac, h in self._history_state.items() if h.get("in_progress")],
-            "uptime_seconds": round(time.time() - self.started_at, 1),
-            "bleak_version": BLEAK_VERSION,
-        }
-
-    # -- Geraete koppeln/entfernen -----------------------------------------------
-
-    def add_device(self, mac: str, name: str, is_probe: bool = False) -> None:
-        mac = mac.upper()
-        logger.info("Fuege Geraet hinzu: mac=%s name=%r is_probe=%s", mac, name, is_probe)
-        self.state.ensure_device(mac, name, is_probe=is_probe)
-        self._run_coro(self._spawn_device_task(mac))
-
-    async def _spawn_device_task(self, mac: str) -> None:
-        existing = self._device_tasks.get(mac)
-        if existing and not existing.done():
-            logger.debug("Verbindungs-Task fuer %s laeuft bereits, ueberspringe", mac)
-            return
-        self._device_tasks[mac] = asyncio.create_task(self._device_loop(mac), name=f"ble-device-{mac}")
-
-    def remove_device(self, mac: str) -> None:
-        mac = mac.upper()
-        logger.info("Entferne Geraet: mac=%s", mac)
-        self.state.remove_device(mac)
-        self._run_coro(self._cancel_device_task(mac))
-
-    async def _cancel_device_task(self, mac: str) -> None:
-        task = self._device_tasks.pop(mac, None)
-        if task:
-            task.cancel()
-        client = self._clients.pop(mac, None)
-        if client:
-            try:
-                await client.disconnect()
-            except Exception:  # noqa: BLE001
-                logger.exception("Fehler beim Trennen von %s", mac)
-
-    # -- Verbindung + Live-Werte ------------------------------------------------
-
-    async def _device_loop(self, mac: str) -> None:
-        while True:
-            try:
-                await self._connect_and_listen(mac)
-            except asyncio.CancelledError:
-                logger.info("Verbindungs-Task fuer %s abgebrochen (Geraet entfernt/gestoppt)", mac)
-                raise
-            except Exception as exc:  # noqa: BLE001 - Verbindungsfehler duerfen die Loop nicht beenden
-                logger.exception("BLE-Verbindungsfehler bei %s", mac)
-                self.state.set_error(mac, f"{type(exc).__name__}: {exc}")
-                self.state.append_raw_log(mac, {"kind": "error", "note": f"{type(exc).__name__}: {exc}"})
-            self.state.set_status(mac, "disconnected")
-            logger.debug("Warte %ss vor erneutem Verbindungsversuch zu %s", self.config.reconnect_delay_seconds, mac)
-            await asyncio.sleep(self.config.reconnect_delay_seconds)
-
-    @staticmethod
-    def _build_client(mac: str) -> BleakClient:
-        """Baut den BleakClient fuer eine Verbindung.
-
-        winrt=dict(use_cached_services=False) deaktiviert auf Windows den
-        WinRT-GATT-Geraete-Cache (verifiziert gegen bleak's
-        WinRTClientArgs/BleakClientWinRT: winrt["use_cached_services"]
-        steuert BluetoothCacheMode.Uncached vs. Cached bei der Service-
-        Discovery). Ein bekannter, dokumentierter Workaround gegen native
-        Abstuerze (Access Violation) durch einen korrupten Geraete-Cache
-        im Windows-Bluetooth-Stack. Auf Nicht-Windows-Backends wird das
-        Argument von bleak klaglos ignoriert (generisches **kwargs im
-        gemeinsamen BleakClient.__init__), daher ohne Plattform-
-        Unterscheidung immer gesetzt."""
-        return BleakClient(mac, timeout=20.0, winrt=dict(use_cached_services=False))
-
-    async def _connect_and_listen(self, mac: str) -> None:
-        logger.info("Verbinde zu %s ...", mac)
-        self.state.set_status(mac, "connecting")
-        self.state.append_raw_log(mac, {"kind": "info", "note": "Verbindungsversuch gestartet"})
-
-        # Bewusst KEIN eigener Scan zur Adressaufloesung vor dem Connect
-        # (frueher hier vorhanden, per BleakScanner.find_device_by_address):
-        # das wiederholte Erstellen/Zerstoeren von WinRT-Scan-Objekten bei
-        # jedem (Re-)Verbindungsversuch korrelierte real mit dem nativen
-        # Absturz auf Windows/Python 3.14. BleakClient(mac) direkt mit der
-        # Adresse verbinden ist die von bleak selbst unterstuetzte Methode;
-        # ein gelegentlicher BleakDeviceNotFoundError wird unten wie jeder
-        # andere Verbindungsfehler abgefangen und nach reconnect_delay_seconds
-        # erneut versucht.
-        client = self._build_client(mac)
-
-        logger.debug("Rufe client.connect() fuer %s auf ...", mac)
-        self.state.append_raw_log(mac, {"kind": "info", "note": "rufe client.connect() auf"})
-        await client.connect()
-        logger.info("client.connect() fuer %s zurueckgekehrt (verbunden=%s)", mac, client.is_connected)
-        self.state.append_raw_log(mac, {"kind": "info", "note": "client.connect() zurueckgekehrt"})
-
-        try:
-            self._clients[mac] = client
-            self.state.set_status(mac, "connected")
-            self.state.set_error(mac, None)
-            logger.info("Mit %s verbunden", mac)
-
-            logger.debug("Aktiviere Notify fuer %s auf %s ...", mac, protocol.NOTIFY_CHAR_UUID)
-            self.state.append_raw_log(mac, {"kind": "info", "note": "aktiviere Notify"})
-            await client.start_notify(protocol.NOTIFY_CHAR_UUID, functools.partial(self._on_notify, mac))
-            logger.debug("Notify aktiviert fuer %s", mac)
-            self.state.append_raw_log(mac, {"kind": "info", "note": "Notify aktiviert"})
-
-            while client.is_connected:
-                await asyncio.sleep(1)
-
-            logger.warning("Verbindung zu %s wurde vom Geraet/Stack beendet", mac)
-        finally:
-            self._clients.pop(mac, None)
-            try:
-                await client.disconnect()
-            except Exception:  # noqa: BLE001
-                logger.exception("Fehler beim Trennen von %s nach Verbindungsende", mac)
-
-    def _on_notify(self, mac: str, _handle: int, data: bytearray) -> None:
-        packet = bytes(data)
-        hex_str = packet.hex()
-
-        hstate = self._history_state.get(mac)
-        if hstate and hstate["in_progress"]:
-            logger.debug("RX (Historie) %s: %s (%d Bytes)", mac, hex_str, len(packet))
-            self.state.append_raw_log(mac, {"kind": "notify-history", "hex": hex_str, "len": len(packet)})
-            self._handle_history_or_end(mac, packet, hstate)
-            return
-
-        reading = protocol.decode_live(packet)
-        if reading is not None:
-            logger.debug(
-                "RX (Live) %s: %s -> temp=%.1f hum=%d batt=%s",
-                mac, hex_str, reading.temperature_c, reading.humidity_pct, reading.battery_pct,
-            )
-            self.state.append_raw_log(mac, {
-                "kind": "notify-live", "hex": hex_str, "len": len(packet),
-                "decoded": {
-                    "temperature_c": reading.temperature_c,
-                    "humidity_pct": reading.humidity_pct,
-                    "battery_pct": reading.battery_pct,
-                },
-            })
-            self.state.set_live_reading(mac, reading)
-            self.storage.insert_live_reading(mac, reading)
-        else:
-            logger.debug("RX (nicht dekodierbar) %s: %s (%d Bytes)", mac, hex_str, len(packet))
-            self.state.append_raw_log(mac, {"kind": "notify-undecoded", "hex": hex_str, "len": len(packet)})
-
-    def _handle_history_or_end(self, mac: str, packet: bytes, hstate: dict) -> None:
-        """Reihenfolge ist wichtig und war frueher ein echter Bug: ob ein
-        Paket ein Historie-Header ist, wird IMMER anhand seines Inhalts
-        entschieden (protocol.is_history_header), nie anhand von
-        packet_index==0 - ein interleaved Live-Push kann durchaus als
-        allererste Antwort auf die Datenanfrage reinkommen (real beobachtet),
-        und ein blindes "erstes Paket = Historie" hat dann sowohl das
-        Live-Paket als Muell-Datensaetze fehlinterpretiert als auch die
-        Erkennung des danach folgenden echten ersten Historie-Pakets
-        durcheinandergebracht (is_first_packet stimmte nicht mehr)."""
-        if protocol.is_history_header(packet):
-            is_first = hstate["packet_index"] == 0
-            records, is_end = protocol.process_history_packet(packet, is_first_packet=is_first)
-            hstate["packet_index"] += 1
-            hstate["buffer"].extend(records)
-            logger.debug(
-                "Historie-Paket #%d von %s: %d Datensaetze, Ende=%s",
-                hstate["packet_index"], mac, len(records), is_end,
-            )
-            if is_end:
-                self._finish_history(mac, hstate)
-            return
-
-        live = protocol.decode_live(packet)
-        if live is not None:
-            logger.debug("Historie von %s implizit beendet (Live-Paket empfangen)", mac)
-            self._finish_history(mac, hstate, trailing_live=live)
-            return
-
-        records, is_end = protocol.process_history_packet(packet, is_first_packet=False)
-        hstate["packet_index"] += 1
-        hstate["buffer"].extend(records)
-        logger.debug(
-            "Historie-Paket #%d von %s: %d Datensaetze, Ende=%s",
-            hstate["packet_index"], mac, len(records), is_end,
-        )
-        if is_end:
-            self._finish_history(mac, hstate)
-
-    def _finish_history(
-        self, mac: str, hstate: dict, trailing_live: Optional[protocol.Reading] = None, clean: bool = True
-    ) -> None:
-        """clean=True: sauberes Ende (explizite 66 66-Terminierung oder ein
-        Live-Paket als implizites Ende). clean=False: wir haben selbst
-        abgebrochen (Idle- oder Gesamt-Timeout) - das Geraet hat vermutlich
-        noch mehr Daten, die Uebertragung war unterbrochen/unvollstaendig."""
-        records = hstate["buffer"]
-        hstate["in_progress"] = False
-        hstate["clean"] = clean
-
-        count = self.storage.insert_history_readings(
-            mac, records, interval_seconds=self.config.history_record_interval_seconds
-        )
-        self.state.set_history_result(mac, count, clean=clean)
-        self.state.set_status(mac, "connected")
-        self.state.append_raw_log(mac, {
-            "kind": "info",
-            "note": f"Verlaufsabruf abgeschlossen: {count} Datensaetze ({'sauber' if clean else 'ABGEBROCHEN, vermutlich unvollstaendig'})",
-        })
-        logger.info("Verlaufsabruf fuer %s abgeschlossen: %d Datensaetze (clean=%s)", mac, count, clean)
-
-        hstate["done_event"].set()
-
-        if trailing_live is not None:
-            self.state.set_live_reading(mac, trailing_live)
-            self.storage.insert_live_reading(mac, trailing_live)
-
-    # -- Scannen nach Geraeten in der Naehe --------------------------------------
-
-    def scan(self, duration: Optional[int] = None) -> Future:
-        duration = duration or self.config.scan_duration_seconds
-        logger.info("Starte BLE-Scan (Dauer=%ss)", duration)
-        return self._run_coro(self._scan_async(duration))
-
-    async def _scan_async(self, duration: int) -> None:
-        self.state.set_scanning(True)
-        try:
-            found = await BleakScanner.discover(timeout=duration, return_adv=True, scanning_mode="active")
-            results = []
-            for device, adv in found.values():
-                entry = self._describe_scan_result(device, adv)
-                results.append(entry)
-                logger.debug("Scan-Treffer: %s", entry)
-            results.sort(key=lambda d: (d["rssi"] is None, -(d["rssi"] or -999)))
-            self.state.set_scan_results(results)
-            self.state.set_scan_error(None)
-            logger.info("Scan abgeschlossen: %d Geraete gefunden", len(results))
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("BLE-Scan fehlgeschlagen")
-            self.state.set_scan_results([])
-            self.state.set_scan_error(f"{type(exc).__name__}: {exc}")
-            raise
-        finally:
-            self.state.set_scanning(False)
-
-    @staticmethod
-    def _describe_scan_result(device, adv) -> dict:
-        """Baut ein moeglichst vollstaendiges, JSON-sicheres Dict aus den
-        von bleak gelieferten Rohdaten (Debug-Zweck: lieber zu viel als zu
-        wenig Information)."""
-
-        def safe(fn, default=None):
-            try:
-                return fn()
-            except Exception:  # noqa: BLE001
-                return default
-
-        manufacturer_data = safe(lambda: {
-            f"0x{k:04x}": v.hex() for k, v in (adv.manufacturer_data or {}).items()
-        }, {}) if adv else {}
-
-        service_data = safe(lambda: {
-            k: v.hex() for k, v in (adv.service_data or {}).items()
-        }, {}) if adv else {}
-
-        service_uuids = safe(lambda: list(adv.service_uuids or []), []) if adv else []
-
-        return {
-            "mac": device.address,
-            "name": device.name,
-            "local_name": safe(lambda: adv.local_name if adv else None),
-            "rssi": safe(lambda: adv.rssi if adv else getattr(device, "rssi", None)),
-            "tx_power": safe(lambda: adv.tx_power if adv else None),
-            "manufacturer_data": manufacturer_data,
-            "service_data": service_data,
-            "service_uuids": service_uuids,
-            "device_details": safe(lambda: str(device.details)),
-            "adv_platform_data": safe(lambda: str(getattr(adv, "platform_data", None))),
-        }
-
-    # -- Verlaufsabruf (von aussen aufgerufen, z.B. aus dem Flask-Thread) -----
-
-    def request_history(self, mac: str, count: int = 500) -> Future:
-        mac = mac.upper()
-        logger.info("Fordere Verlauf an: mac=%s count=%d", mac, count)
-        future = self._run_coro(self._request_history_async(mac, count))
-
-        def _on_done(fut: Future) -> None:
-            exc = fut.exception()
-            if exc is not None:
-                logger.error("Verlaufsabruf fuer %s fehlgeschlagen: %s", mac, exc)
-                self.state.set_error(mac, str(exc))
-                self.state.set_status(mac, "connected" if mac in self._clients else "disconnected")
-
-        future.add_done_callback(_on_done)
-        return future
-
-    async def _request_history_async(self, mac: str, count: int) -> dict:
-        """Fordert Verlauf an und wartet IDLE-basiert auf die Antwort: solange
-        neue Pakete reinkommen, wird weitergewartet; erst wenn
-        HISTORY_IDLE_TIMEOUT_SECONDS lang gar nichts mehr kam (oder das
-        grosszuegige Gesamt-Zeitfenster ueberschritten ist), wird abgebrochen.
-        Ein fester Gesamt-Timeout (frueher: 30s, spaeter grob nach Anzahl
-        hochskaliert) erwies sich in der Praxis als zu ungenau: die
-        Uebertragungsrate ueber eine reale, ggf. schwache BLE-Verbindung ist
-        nicht konstant, ein zu kurzes festes Fenster schnitt grosse Abrufe
-        vorzeitig ab. Gibt {"count": int, "clean": bool} zurueck - clean=False
-        bedeutet: wir haben selbst abgebrochen, das Geraet hat vermutlich noch
-        mehr Daten (fuer den Auto-Sync-Mechanismus relevant, siehe dort)."""
-        client = self._clients.get(mac)
-        if not client or not client.is_connected:
-            raise RuntimeError(f"Nicht mit {mac} verbunden.")
-
-        hstate = {"in_progress": True, "packet_index": 0, "buffer": [], "done_event": asyncio.Event(), "clean": False}
-        self._history_state[mac] = hstate
-        self.state.set_status(mac, "fetching_history")
-
-        overall_cap = max(HISTORY_MIN_OVERALL_TIMEOUT_SECONDS, min(HISTORY_MAX_OVERALL_TIMEOUT_SECONDS, count * 0.05))
-
-        async def send(label: str, payload: bytes) -> None:
-            logger.debug("TX (%s) %s: %s", label, mac, payload.hex())
-            self.state.append_raw_log(mac, {"kind": f"write-{label}", "hex": payload.hex(), "len": len(payload)})
-            await client.write_gatt_char(protocol.WRITE_CHAR_UUID, payload)
-            await asyncio.sleep(protocol.COMMAND_DELAY_SECONDS)
-
-        try:
-            await send("time-sync", protocol.build_time_sync_command())
-            await send("session-init", protocol.get_session_init_command())
-            await send("offset", protocol.get_offset_command())
-            await send("data-request", protocol.build_data_request_command(count))
-
-            logger.debug(
-                "Warte auf Verlaufsdaten von %s (angefragt: %d, Idle-Timeout=%ds, Gesamt-Obergrenze=%.0fs)",
-                mac, count, HISTORY_IDLE_TIMEOUT_SECONDS, overall_cap,
-            )
-            start = time.monotonic()
-            last_packet_index = -1
-            while True:
-                remaining_overall = overall_cap - (time.monotonic() - start)
-                if remaining_overall <= 0:
-                    logger.warning(
-                        "Gesamt-Obergrenze (%.0fs) fuer Verlaufsabruf von %s erreicht, breche mit %d Datensaetzen ab",
-                        overall_cap, mac, len(hstate["buffer"]),
-                    )
-                    self._finish_history(mac, hstate, clean=False)
-                    break
-                try:
-                    await asyncio.wait_for(hstate["done_event"].wait(), timeout=min(HISTORY_IDLE_TIMEOUT_SECONDS, remaining_overall))
-                    break
-                except asyncio.TimeoutError:
-                    if hstate["packet_index"] == last_packet_index:
-                        logger.warning(
-                            "Keine neuen Verlaufs-Pakete seit %ds von %s, beende Abruf mit %d Datensaetzen",
-                            HISTORY_IDLE_TIMEOUT_SECONDS, mac, len(hstate["buffer"]),
-                        )
-                        self._finish_history(mac, hstate, clean=False)
-                        break
-                    last_packet_index = hstate["packet_index"]
-        finally:
-            hstate["in_progress"] = False
-
-        return {"count": len(hstate["buffer"]), "clean": hstate.get("clean", False)}
-
-    # -- Rohbefehl senden (Reverse-Engineering-Werkzeug) -------------------------
-
-    def write_raw(self, mac: str, data: bytes) -> Future:
-        """Schreibt beliebige Rohbytes direkt auf die Write-Characteristic.
-        Fuer die drei nicht dokumentierten Verlaufs-Kommandos (Zeit-Sync,
-        Session-Init, Offset - siehe protocol.py) lassen sich hiermit
-        Kandidaten-Bytes am echten Geraet ausprobieren; die Antwort
-        erscheint wie jedes andere empfangene Paket live im Rohdaten-Feed
-        des Geraets (/api/devices/<mac>/log)."""
-        mac = mac.upper()
-        logger.info("Sende Rohbefehl an %s: %s", mac, data.hex())
-        future = self._run_coro(self._write_raw_async(mac, data))
-
-        def _on_done(fut: Future) -> None:
-            exc = fut.exception()
-            if exc is not None:
-                logger.error("Rohbefehl an %s fehlgeschlagen: %s", mac, exc)
-                self.state.set_error(mac, str(exc))
-
-        future.add_done_callback(_on_done)
-        return future
-
-    async def _write_raw_async(self, mac: str, data: bytes) -> None:
-        client = self._clients.get(mac)
-        if not client or not client.is_connected:
-            raise RuntimeError(f"Nicht mit {mac} verbunden.")
-        self.state.append_raw_log(mac, {"kind": "write-manual", "hex": data.hex(), "len": len(data)})
-        await client.write_gatt_char(protocol.WRITE_CHAR_UUID, data)
