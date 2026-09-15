@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TP357S Monitor</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<header>
+  <h1>ThermoPro TP357S Monitor</h1>
+  <span id="status" class="badge warn">Startet…</span>
+</header>
+<main>
+  <p id="error" class="error"></p>
+
+  <section class="card">
+    <h2>Live-Wert</h2>
+    <div class="live-grid">
+      <div><span class="label">Temperatur</span><span id="temp" class="value">–</span></div>
+      <div><span class="label">Luftfeuchte</span><span id="hum" class="value">–</span></div>
+      <div><span class="label">Batterie</span><span id="batt" class="value">–</span></div>
+    </div>
+    <p class="muted">Letzte Aktualisierung: <span id="live-ts">–</span></p>
+  </section>
+
+  <section class="card">
+    <h2>Verlauf</h2>
+    <div class="toolbar">
+      <label>Anzahl Datensätze: <input id="history-count" type="number" value="500" min="1" max="5000" /></label>
+      <button id="fetch-history-btn">Verlauf vom Sensor abrufen</button>
+      <a href="/api/export.csv">CSV-Export</a>
+    </div>
+    <p id="history-info" class="muted"></p>
+    <canvas id="chart" width="800" height="200"></canvas>
+    <table>
+      <thead><tr><th>Zeitstempel (geschätzt)</th><th>Temperatur °C</th><th>Luftfeuchte %</th></tr></thead>
+      <tbody id="history-body"></tbody>
+    </table>
+  </section>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>
