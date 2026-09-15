@@ -5,8 +5,9 @@ import threading
 import time
 import webbrowser
 
-from app.ble_client import BleController
+from app.ble_client import BleManager
 from app.config import load_config
+from app.devices import DeviceStore
 from app.server import create_app
 from app.state import AppState
 from app.storage import Storage
@@ -20,11 +21,15 @@ def main() -> None:
 
     state = AppState()
     storage = Storage(config.db_path)
+    devices = DeviceStore(config.devices_path)
 
-    ble = BleController(config, state, storage)
+    ble = BleManager(config, state, storage)
     ble.start()
 
-    app = create_app(state, storage, ble)
+    for record in devices.list():
+        ble.add_device(record.mac, record.name)
+
+    app = create_app(state, storage, ble, devices)
     url = f"http://{config.web_host}:{config.web_port}/"
 
     def open_browser() -> None:

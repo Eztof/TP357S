@@ -1,9 +1,9 @@
 {
-  "mac_address": "AA:BB:CC:DD:EE:FF",
-  "device_name": "TP357S",
   "history_record_interval_seconds": 60,
   "reconnect_delay_seconds": 10,
+  "scan_duration_seconds": 8,
   "web_host": "127.0.0.1",
   "web_port": 5000,
-  "db_path": "data/tp357s.db"
+  "db_path": "data/tp357s.db",
+  "devices_path": "data/devices.json"
 }
