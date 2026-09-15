@@ -159,27 +159,59 @@ class BleManager:
             logger.debug("Warte %ss vor erneutem Verbindungsversuch zu %s", self.config.reconnect_delay_seconds, mac)
             await asyncio.sleep(self.config.reconnect_delay_seconds)
 
+    @staticmethod
+    def _build_client(mac: str) -> BleakClient:
+        """Baut den BleakClient fuer eine Verbindung.
+
+        winrt=dict(use_cached_services=False) deaktiviert auf Windows den
+        WinRT-GATT-Geraete-Cache (verifiziert gegen bleak's
+        WinRTClientArgs/BleakClientWinRT: winrt["use_cached_services"]
+        steuert BluetoothCacheMode.Uncached vs. Cached bei der Service-
+        Discovery). Ein bekannter, dokumentierter Workaround gegen native
+        Abstuerze (Access Violation) durch einen korrupten Geraete-Cache
+        im Windows-Bluetooth-Stack - genau das Symptom, das hier auftrat
+        (Prozess stirbt beim allerersten Verbindungsaufbau zu einem neuen
+        Geraet, ganz ohne Python-Traceback). Auf Nicht-Windows-Backends
+        wird das Argument von bleak klaglos ignoriert (generisches
+        **kwargs im gemeinsamen BleakClient.__init__), daher ohne
+        Plattform-Unterscheidung immer gesetzt."""
+        return BleakClient(mac, timeout=20.0, winrt=dict(use_cached_services=False))
+
     async def _connect_and_listen(self, mac: str) -> None:
         logger.info("Verbinde zu %s ...", mac)
         self.state.set_status(mac, "connecting")
         self.state.append_raw_log(mac, {"kind": "info", "note": "Verbindungsversuch gestartet"})
 
-        async with BleakClient(mac) as client:
+        client = self._build_client(mac)
+
+        logger.debug("Rufe client.connect() fuer %s auf ...", mac)
+        self.state.append_raw_log(mac, {"kind": "info", "note": "rufe client.connect() auf"})
+        await client.connect()
+        logger.info("client.connect() fuer %s zurueckgekehrt (verbunden=%s)", mac, client.is_connected)
+        self.state.append_raw_log(mac, {"kind": "info", "note": "client.connect() zurueckgekehrt"})
+
+        try:
             self._clients[mac] = client
             self.state.set_status(mac, "connected")
             self.state.set_error(mac, None)
-            self.state.append_raw_log(mac, {"kind": "info", "note": "verbunden"})
             logger.info("Mit %s verbunden", mac)
 
+            logger.debug("Aktiviere Notify fuer %s auf %s ...", mac, protocol.NOTIFY_CHAR_UUID)
+            self.state.append_raw_log(mac, {"kind": "info", "note": "aktiviere Notify"})
             await client.start_notify(protocol.NOTIFY_CHAR_UUID, functools.partial(self._on_notify, mac))
-            logger.debug("Notify aktiviert fuer %s auf %s", mac, protocol.NOTIFY_CHAR_UUID)
+            logger.debug("Notify aktiviert fuer %s", mac)
+            self.state.append_raw_log(mac, {"kind": "info", "note": "Notify aktiviert"})
 
             while client.is_connected:
                 await asyncio.sleep(1)
 
             logger.warning("Verbindung zu %s wurde vom Geraet/Stack beendet", mac)
-
-        self._clients.pop(mac, None)
+        finally:
+            self._clients.pop(mac, None)
+            try:
+                await client.disconnect()
+            except Exception:  # noqa: BLE001
+                logger.exception("Fehler beim Trennen von %s nach Verbindungsende", mac)
 
     def _on_notify(self, mac: str, _handle: int, data: bytearray) -> None:
         packet = bytes(data)

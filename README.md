@@ -169,12 +169,10 @@ Im Dashboard direkt einsehbar, ohne auf die Festplatte zu müssen:
   Abbruch zeigt in aller Regel die Ursache. `start.bat`/`start.sh` schließen
   das Konsolenfenster nicht automatisch, daher steht der Traceback i. d. R.
   auch dort.
-- `start.bat`/`start.sh` starten die App seit Kurzem automatisch neu, falls
-  der Prozess beendet wird (egal ob durch Absturz oder normales Beenden) —
-  5 Sekunden Countdown, danach automatischer Neustart. Zum endgültigen
-  Beenden das Konsolenfenster schließen oder mehrfach Strg+C drücken.
-  Gekoppelte Sensoren werden dabei automatisch aus `data/devices.json`
-  wieder verbunden.
+Kein Auto-Neustart bei Absturz — bewusst nicht: `start.bat`/`start.sh`
+starten die App genau einmal, das Konsolenfenster bleibt danach offen
+stehen (`pause`), damit ein Absturz-Traceback (falls vorhanden) sichtbar
+bleibt statt weggescrollt zu werden.
 
 ### Bekanntes Problem: Prozess stirbt beim Verbinden, ganz ohne Traceback
 
@@ -187,20 +185,36 @@ Backend, auf das `bleak` unter Windows zwingend angewiesen ist (die
 `winrt-*`-Pakete). Ein solcher Absturz reißt den kompletten Python-Prozess
 sofort runter, bevor überhaupt eine Python-Exception geworfen werden kann
 — dagegen kann kein Try/Except und kein Logging von innen etwas ausrichten.
+Im Rohdaten-Feed des Geräts (`/api/devices/<mac>/log`) steht trotzdem der
+letzte erreichte Schritt (`rufe client.connect() auf` vs. `client.connect()
+zurueckgekehrt` vs. `aktiviere Notify`), das grenzt zumindest ein, in
+welchem Aufruf es gestorben ist.
 
-Meist betrifft das sehr neue Python-Versionen (3.14+), für die die
-`winrt`-Bindungen (noch) nicht zuverlässig funktionieren. Abhilfe:
+Angewendete Mitigation (`app/ble_client.py`, `_build_client`): der Client
+wird mit `winrt=dict(use_cached_services=False)` aufgebaut — das schaltet
+den WinRT-GATT-Geräte-Cache ab (verifiziert gegen `bleak`s
+`WinRTClientArgs`/`BleakClientWinRT`: steuert `BluetoothCacheMode.Uncached`
+vs. `Cached` bei der Service-Discovery). Ein korrupter Geräte-Cache im
+Windows-Bluetooth-Stack ist eine bekannte, dokumentierte Ursache für genau
+so einen Absturz beim allerersten Verbindungsaufbau zu einem neuen Gerät.
+Zusätzlich ein expliziter `timeout=20.0` statt bleaks Default.
 
-1. Python 3.11 oder 3.12 installieren (die für `bleak`/`winrt` unter
-   Windows am besten getesteten Versionen).
-2. Den `venv`-Ordner löschen.
-3. `start.bat` erneut ausführen — legt die virtuelle Umgebung mit der
-   dann aktiven Python-Version neu an. `start.bat` warnt inzwischen auch
-   selbst, falls es eine Python-3.14+-Umgebung erkennt.
+Falls der Absturz trotzdem wieder auftritt (auf **Python 3.14** ist das
+nicht ausgeschlossen — die `winrt`-Bindungen sind dafür noch vergleichsweise
+neu und ihr Kompatibilitätsstand kann sich mit jedem Patch-Release ändern):
 
-Der eingebaute Auto-Neustart (siehe oben) sorgt in der Zwischenzeit
-zumindest dafür, dass die App nach einem solchen Absturz automatisch
-wieder hochkommt, statt dauerhaft down zu bleiben.
+- `pip install --upgrade bleak` in der `venv` (neuere `winrt`-Unterpakete
+  können Bugfixes enthalten, die `requirements.txt` nicht automatisch zieht).
+- Prüfen, ob Windows-Update / aktuelle Bluetooth-Treiber verfügbar sind —
+  einige dieser WinRT-Abstürze sind tatsächlich Treiberbugs, die nur über
+  die WinRT-API sichtbar werden.
+- Den Sensor einmal reproduzierbar über die Windows-Bluetooth-Einstellungen
+  koppeln/entkoppeln, bevor er hier hinzugefügt wird — das kann einen
+  hängengebliebenen internen Windows-Geräte-Cache zurücksetzen, unabhängig
+  von `use_cached_services`.
+- Als letzter Ausweg (nicht erforderlich, nur falls nichts davon hilft):
+  Python 3.11/3.12 sind für `bleak`/`winrt` unter Windows am längsten im
+  Einsatz und am besten getestet.
 
 ## ⚠️ Wichtiger Hinweis zum Verlaufs-Abruf
 
