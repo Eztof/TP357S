@@ -305,6 +305,15 @@ Wochentags-Byte (anders als bei a) — nur `YY MM DD HH MM SS`, 6 statt
 7 Bytes — und die Checksumme läuft nur über `01 09 00 00 00 <Datum> NL NH`,
 nicht über die äußeren `CC CC`/`66 66`-Rahmen-Bytes.
 
+**Wichtige Erkenntnis aus echten Log-Daten:** Ob ein empfangenes Paket ein
+Historie-Header ist, entscheidet `_handle_history_or_end`
+(`app/ble_client.py`) **immer** anhand seines Inhalts
+(`protocol.is_history_header`), niemals anhand der Paketposition
+("erstes Paket = automatisch Historie" war ein Bug, siehe Auto-Sync unten).
+Ein normaler Live-Push kann real beobachtet als allererste Antwort auf eine
+Datenanfrage reinkommen — das ist laut Spezifikation ohnehin das implizite
+Ende-Kriterium, kein Sonderfall.
+
 ## Auto-Sync
 
 Periodischer, automatischer Verlaufs-Abruf mit Lücken-Erkennung (`app/ble_client.py`,

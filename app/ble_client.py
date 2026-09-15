@@ -367,7 +367,16 @@ class BleManager:
             self.state.append_raw_log(mac, {"kind": "notify-undecoded", "hex": hex_str, "len": len(packet)})
 
     def _handle_history_or_end(self, mac: str, packet: bytes, hstate: dict) -> None:
-        if hstate["packet_index"] == 0 or protocol.is_history_header(packet):
+        """Reihenfolge ist wichtig und war frueher ein echter Bug: ob ein
+        Paket ein Historie-Header ist, wird IMMER anhand seines Inhalts
+        entschieden (protocol.is_history_header), nie anhand von
+        packet_index==0 - ein interleaved Live-Push kann durchaus als
+        allererste Antwort auf die Datenanfrage reinkommen (real beobachtet),
+        und ein blindes "erstes Paket = Historie" hat dann sowohl das
+        Live-Paket als Muell-Datensaetze fehlinterpretiert als auch die
+        Erkennung des danach folgenden echten ersten Historie-Pakets
+        durcheinandergebracht (is_first_packet stimmte nicht mehr)."""
+        if protocol.is_history_header(packet):
             is_first = hstate["packet_index"] == 0
             records, is_end = protocol.process_history_packet(packet, is_first_packet=is_first)
             hstate["packet_index"] += 1
