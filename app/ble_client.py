@@ -435,3 +435,32 @@ class BleManager:
             hstate["in_progress"] = False
 
         return len(hstate["buffer"])
+
+    # -- Rohbefehl senden (Reverse-Engineering-Werkzeug) -------------------------
+
+    def write_raw(self, mac: str, data: bytes) -> Future:
+        """Schreibt beliebige Rohbytes direkt auf die Write-Characteristic.
+        Fuer die drei nicht dokumentierten Verlaufs-Kommandos (Zeit-Sync,
+        Session-Init, Offset - siehe protocol.py) lassen sich hiermit
+        Kandidaten-Bytes am echten Geraet ausprobieren; die Antwort
+        erscheint wie jedes andere empfangene Paket live im Rohdaten-Feed
+        des Geraets (/api/devices/<mac>/log)."""
+        mac = mac.upper()
+        logger.info("Sende Rohbefehl an %s: %s", mac, data.hex())
+        future = self._run_coro(self._write_raw_async(mac, data))
+
+        def _on_done(fut: Future) -> None:
+            exc = fut.exception()
+            if exc is not None:
+                logger.error("Rohbefehl an %s fehlgeschlagen: %s", mac, exc)
+                self.state.set_error(mac, str(exc))
+
+        future.add_done_callback(_on_done)
+        return future
+
+    async def _write_raw_async(self, mac: str, data: bytes) -> None:
+        client = self._clients.get(mac)
+        if not client or not client.is_connected:
+            raise RuntimeError(f"Nicht mit {mac} verbunden.")
+        self.state.append_raw_log(mac, {"kind": "write-manual", "hex": data.hex(), "len": len(data)})
+        await client.write_gatt_char(protocol.WRITE_CHAR_UUID, data)

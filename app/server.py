@@ -9,6 +9,7 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 
+from . import protocol
 from .ble_client import BleManager
 from .config import AppConfig
 from .devices import DeviceStore
@@ -129,6 +130,34 @@ def create_app(config: AppConfig, state: AppState, storage: Storage, ble: BleMan
         count = request.args.get("count", default=500, type=int)
         ble.request_history(mac, count=count)
         return jsonify({"ok": True})
+
+    @app.post("/api/devices/<mac>/write")
+    def api_write_raw(mac):
+        payload = request.get_json(force=True, silent=True) or {}
+        hex_str = (payload.get("hex") or "").strip().replace(" ", "")
+        try:
+            data = bytes.fromhex(hex_str)
+        except ValueError:
+            return jsonify({"ok": False, "error": "Ungueltige Hex-Zeichenkette"}), 400
+        if not data:
+            return jsonify({"ok": False, "error": "Keine Bytes angegeben"}), 400
+        ble.write_raw(mac, data)
+        return jsonify({"ok": True})
+
+    @app.get("/api/checksum")
+    def api_checksum():
+        hex_str = (request.args.get("hex") or "").strip().replace(" ", "")
+        try:
+            data = bytes.fromhex(hex_str)
+        except ValueError:
+            return jsonify({"ok": False, "error": "Ungueltige Hex-Zeichenkette"}), 400
+        cs = protocol.checksum(data)
+        return jsonify({
+            "ok": True,
+            "checksum_hex": f"{cs:02x}",
+            "checksum_dec": cs,
+            "with_checksum_hex": data.hex() + f"{cs:02x}",
+        })
 
     # -- Live-Test / Probe (temporaere, nicht gespeicherte Verbindung) -----------
 

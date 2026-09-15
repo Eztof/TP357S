@@ -140,6 +140,29 @@ Nähe kurz ausschalten/aus der Reichweite bringen und erneut scannen.
 - **Umbenennen/Entfernen:** jederzeit im Dashboard möglich.
 - **CSV-Export:** `/api/export.csv?mac=<MAC>` bzw. Link im Dashboard
   (ohne `mac`-Parameter werden alle Sensoren exportiert).
+- **Rohbefehl-Konsole (pro Gerät):** direkt unter dem Rohdaten-Feed jedes
+  Geräts lassen sich beliebige Hex-Bytes über die Write-Characteristic
+  (`…2b11`) an den Sensor senden (`POST /api/devices/<mac>/write`), die
+  Antwort erscheint wie jedes andere empfangene Paket live im Feed. Der
+  Button „+ Checksumme anhängen“ ruft `GET /api/checksum?hex=...` auf und
+  hängt `sum(bytes) & 0xFF` als letztes Byte an (dieselbe Checksumme, die
+  auch die Verlaufs-Kommandos verwenden). Gedacht zum Ausprobieren der drei
+  fehlenden Verlaufs-Kommandos (siehe Hinweis unten) direkt am echten Gerät.
+
+## ⚠️ Batterie-Byte (Byte 6) ist unverifiziert
+
+Byte 6 des Live-Pakets wird als `battery_pct` dekodiert, weil die
+Original-Spezifikation es so beschrieb — allerdings selbst nur mit
+„vermutlich Batteriestand“. In echten Tests zeigten zwei unterschiedlich
+alte TP357S-Sensoren beide durchgehend denselben Wert (44), was gegen eine
+simple 0–100-%-Angabe spricht (entweder eine sehr grobe Stufeneinteilung
+statt echter Prozentzahl, oder das Byte bedeutet etwas anderes). Ohne
+Vergleichsdaten (z. B. den in der offiziellen ThermoPro-App angezeigten
+Batteriestand zum selben Zeitpunkt) lässt sich das nicht verlässlich
+korrigieren — im Zweifel dem Wert nicht vertrauen. Mit der Rohbefehl-
+Konsole bzw. durch Beobachtung des Rohdaten-Feeds über einen längeren
+Zeitraum (`hex=...` in `/api/devices/<mac>/log`) lässt sich das bei Bedarf
+selbst weiter eingrenzen.
 
 ## Debugging / Absturz analysieren
 
@@ -251,10 +274,19 @@ OFFSET_COMMAND: Optional[bytes] = None
 
 **Der Live-Wert funktioniert bereits vollständig ohne weitere Änderungen.**
 Für den Verlaufs-Abruf müssen diese drei Byte-Sequenzen einmalig eingetragen
-werden (z. B. durch einen BLE-Sniff der offiziellen ThermoPro-App mit
-nRF Connect / Wireshark, oder falls du die vollständige Original-Spezifikation
-noch hast). Solange sie `None` sind, gibt das Dashboard beim Versuch, die
-Historie abzurufen, eine klare Fehlermeldung aus statt stillschweigend
+werden. Zwei Wege dahin:
+
+1. BLE-Sniff der offiziellen ThermoPro-App (z. B. nRF Connect / Android
+   HCI-Snoop-Log + Wireshark) während sie den Verlauf abruft.
+2. Selbst ausprobieren über die **Rohbefehl-Konsole** (siehe oben) direkt
+   am verbundenen Gerät: Kandidaten-Bytes eintragen, ggf. Checksumme
+   anhängen, senden, Antwort im Rohdaten-Feed beobachten. Da Kommando d
+   (`01 09 ...`) bereits bekannt und funktionsfähig ist, liefert es ein
+   Muster für den Aufbau der anderen drei (Praefix + Datumsfelder +
+   Checksumme).
+
+Solange die drei Konstanten `None` sind, gibt das Dashboard beim Versuch,
+die Historie abzurufen, eine klare Fehlermeldung aus statt stillschweigend
 falsche Daten zu senden.
 
 ## Datenschutz / Speicherort

@@ -236,7 +236,7 @@ function renderDevices(devices) {
       <td class="small">${toLocalTime(d.last_status_change)}</td>
       <td class="mono">${
         d.last_live
-          ? `${d.last_live.temperature_c.toFixed(1)}°C ${d.last_live.humidity_pct}% batt=${d.last_live.battery_pct}` +
+          ? `${d.last_live.temperature_c.toFixed(1)}°C ${d.last_live.humidity_pct}% byte6(vermutl. Batt.)=${d.last_live.battery_pct}` +
             ` @ ${toLocalTime(d.last_live_ts)}`
           : "-"
       }</td>
@@ -316,6 +316,25 @@ function updateDeviceLogPanels(devices) {
       container.className = "device-log-panel";
       const header = document.createElement("h4");
       container.appendChild(header);
+
+      const writeRow = document.createElement("div");
+      writeRow.className = "row";
+      const hexInput = document.createElement("input");
+      hexInput.type = "text";
+      hexInput.placeholder = "Hex-Bytes, z.B. 0109190915...";
+      hexInput.size = 40;
+      const sendBtn = document.createElement("button");
+      sendBtn.textContent = "Rohbefehl senden";
+      sendBtn.addEventListener("click", () => sendRawWrite(d.mac, hexInput));
+      const csBtn = document.createElement("button");
+      csBtn.textContent = "+ Checksumme anhängen";
+      csBtn.title = "Haengt sum(bytes) & 0xFF als letztes Byte an (siehe Verlaufs-Kommando-Checksumme)";
+      csBtn.addEventListener("click", () => appendChecksum(hexInput));
+      writeRow.appendChild(hexInput);
+      writeRow.appendChild(sendBtn);
+      writeRow.appendChild(csBtn);
+      container.appendChild(writeRow);
+
       const pre = document.createElement("pre");
       pre.className = "log-box small";
       container.appendChild(pre);
@@ -345,6 +364,34 @@ async function fetchDeviceLog(mac, pre) {
     pre.scrollTop = pre.scrollHeight;
   } catch (e) {
     pre.textContent = "Fehler beim Laden: " + e.message;
+  }
+}
+
+async function sendRawWrite(mac, hexInput) {
+  const hex = hexInput.value.trim();
+  if (!hex) {
+    alert("Bitte Hex-Bytes eintragen (z.B. 0109190915...).");
+    return;
+  }
+  try {
+    await fetchJSON(`/api/devices/${encodeURIComponent(mac)}/write`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hex }),
+    });
+  } catch (e) {
+    alert("Senden fehlgeschlagen: " + e.message);
+  }
+}
+
+async function appendChecksum(hexInput) {
+  const hex = hexInput.value.trim();
+  if (!hex) return;
+  try {
+    const res = await fetchJSON(`/api/checksum?hex=${encodeURIComponent(hex)}`);
+    hexInput.value = res.with_checksum_hex;
+  } catch (e) {
+    alert("Checksumme konnte nicht berechnet werden: " + e.message);
   }
 }
 
