@@ -148,6 +148,57 @@ Nähe kurz ausschalten/aus der Reichweite bringen und erneut scannen.
   hängt `sum(bytes) & 0xFF` als letztes Byte an (dieselbe Checksumme, die
   auch die Verlaufs-Kommandos verwenden). Gedacht zum Ausprobieren der drei
   fehlenden Verlaufs-Kommandos (siehe Hinweis unten) direkt am echten Gerät.
+  Der Button „Beispiel einfügen (Datenanfrage)“ füllt das Eingabefeld mit
+  dem einzigen vollständig bekannten und funktionierenden Kommando
+  (`01 09 ...`, fertig kodiert mit aktueller Uhrzeit und Anzahl 500) —
+  praktisch für einen ersten Test ganz ohne eigenes Wissen über das
+  Protokoll: Button klicken, „Rohbefehl senden“ klicken, im Feed direkt
+  darunter beobachten, ob eine Antwort kommt.
+
+## Wie komme ich an die drei fehlenden Verlaufs-Kommandos?
+
+Reines Ausprobieren zufälliger Bytes bringt bei den drei unbekannten
+Kommandos (Uhrzeit-Sync, Session-Init, Offset) wenig — der Byte-Raum ist
+zu groß. Zwei sinnvolle Wege:
+
+**1. Erst mal testen, ob sie überhaupt nötig sind.** Manche Sensoren
+akzeptieren eine Datenanfrage auch ohne die vorgeschalteten
+„Vorbereitungs“-Kommandos. Im Dashboard bei einem verbundenen Gerät:
+„Beispiel einfügen (Datenanfrage)“ → „Rohbefehl senden“ → Feed beobachten.
+Kommt danach eine Antwort mit dem Header `CC CC 01 ...`, war das schon die
+ganze Lösung (dann bitte melden, dann trage ich es direkt als
+Sonderfall in `app/protocol.py` ein). Kommt nichts oder eine Fehlerantwort,
+sind die drei Kommandos vermutlich wirklich nötig.
+
+**2. BLE-Sniff der offiziellen ThermoPro-App** (zuverlässigster Weg, wenn
+1. nicht reicht) — auf Android, ohne Root:
+
+1. Einstellungen → Über das Telefon → 7× auf „Build-Nummer“ tippen
+   (aktiviert Entwickleroptionen), falls noch nicht aktiv.
+2. Einstellungen → Entwickleroptionen → „Bluetooth-HCI-Snoop-Log“
+   aktivieren.
+3. Bluetooth kurz aus- und wieder einschalten (damit die Aufzeichnung
+   sauber neu startet).
+4. Offizielle ThermoPro-App öffnen, mit demselben Sensor verbinden und
+   den Verlauf abrufen (genau die Aktion, deren Bytes wir sehen wollen).
+5. Entwickleroptionen → „Bluetooth-HCI-Snoop-Log“ wieder ausschalten.
+6. Die Log-Datei holen: entweder per USB-Debugging mit
+   `adb bugreport` (enthält u. a. `FS/bt_stack.log_snoop` bzw.
+   `btsnoop_hci.log`), oder falls im Hersteller-Dateisystem sichtbar
+   direkt unter `/sdcard/btsnoop_hci.log` bzw. im internen Speicher unter
+   „Android/data“ — je nach Android-Version leicht unterschiedlich.
+7. Die Datei in **Wireshark** öffnen und nach
+   `btatt.opcode == 0x52 || btatt.opcode == 0x12` filtern (Write
+   Request/Command) auf dem Handle der Write-Characteristic
+   (`00010203-0405-0607-0809-0a0b0c0d2b11`). Die dort sichtbaren
+   „Value“-Bytes sind die gesuchten Kommandos — in der Reihenfolge, in der
+   die App sie sendet, entsprechen sie a) Uhrzeit-Sync, b) Session-Init,
+   c) Offset, d) Datenanfrage.
+8. Die gefundenen Bytes in `app/protocol.py` eintragen
+   (`TIME_SYNC_OPCODE`, `SESSION_INIT_COMMAND`, `OFFSET_COMMAND` — bei
+   a) nur den festen Präfix vor den Datumsfeldern notieren, bei b)/c)
+   die komplette feste Byte-Folge). Vorher unbedingt mit der Rohbefehl-
+   Konsole am eigenen Gerät gegentesten, dass es funktioniert.
 
 ## ⚠️ Batterie-Byte (Byte 6) ist unverifiziert
 
@@ -274,16 +325,9 @@ OFFSET_COMMAND: Optional[bytes] = None
 
 **Der Live-Wert funktioniert bereits vollständig ohne weitere Änderungen.**
 Für den Verlaufs-Abruf müssen diese drei Byte-Sequenzen einmalig eingetragen
-werden. Zwei Wege dahin:
-
-1. BLE-Sniff der offiziellen ThermoPro-App (z. B. nRF Connect / Android
-   HCI-Snoop-Log + Wireshark) während sie den Verlauf abruft.
-2. Selbst ausprobieren über die **Rohbefehl-Konsole** (siehe oben) direkt
-   am verbundenen Gerät: Kandidaten-Bytes eintragen, ggf. Checksumme
-   anhängen, senden, Antwort im Rohdaten-Feed beobachten. Da Kommando d
-   (`01 09 ...`) bereits bekannt und funktionsfähig ist, liefert es ein
-   Muster für den Aufbau der anderen drei (Praefix + Datumsfelder +
-   Checksumme).
+werden — siehe „Wie komme ich an die drei fehlenden Verlaufs-Kommandos?“
+oben für die konkrete Vorgehensweise (erst per Rohbefehl-Konsole testen, ob
+sie überhaupt nötig sind, sonst per BLE-Sniff der offiziellen App ermitteln).
 
 Solange die drei Konstanten `None` sind, gibt das Dashboard beim Versuch,
 die Historie abzurufen, eine klare Fehlermeldung aus statt stillschweigend

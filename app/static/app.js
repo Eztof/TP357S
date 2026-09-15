@@ -330,10 +330,22 @@ function updateDeviceLogPanels(devices) {
       csBtn.textContent = "+ Checksumme anhängen";
       csBtn.title = "Haengt sum(bytes) & 0xFF als letztes Byte an (siehe Verlaufs-Kommando-Checksumme)";
       csBtn.addEventListener("click", () => appendChecksum(hexInput));
+      const exampleBtn = document.createElement("button");
+      exampleBtn.textContent = "Beispiel einfügen (Datenanfrage)";
+      exampleBtn.title = "Fügt das einzige vollständig bekannte Kommando ein, fertig kodiert für jetzt";
+      exampleBtn.addEventListener("click", () => insertExample(hexInput));
       writeRow.appendChild(hexInput);
       writeRow.appendChild(sendBtn);
       writeRow.appendChild(csBtn);
+      writeRow.appendChild(exampleBtn);
       container.appendChild(writeRow);
+
+      const hint = document.createElement("p");
+      hint.className = "small";
+      hint.textContent =
+        "Testidee: \"Beispiel einfügen\" klicken, \"Rohbefehl senden\" klicken, unten im Feed beobachten " +
+        "(reicht die Datenanfrage allein, ohne die 3 unbekannten Vorbereitungs-Kommandos?).";
+      container.appendChild(hint);
 
       const pre = document.createElement("pre");
       pre.className = "log-box small";
@@ -392,6 +404,15 @@ async function appendChecksum(hexInput) {
     hexInput.value = res.with_checksum_hex;
   } catch (e) {
     alert("Checksumme konnte nicht berechnet werden: " + e.message);
+  }
+}
+
+async function insertExample(hexInput) {
+  try {
+    const res = await fetchJSON("/api/protocol/examples?count=500");
+    hexInput.value = res.data_request_hex;
+  } catch (e) {
+    alert("Beispiel konnte nicht geladen werden: " + e.message);
   }
 }
 
