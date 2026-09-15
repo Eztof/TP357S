@@ -1,5 +1,10 @@
 """Startanwendung: startet die Bluetooth-Anbindung und den lokalen Webserver
-und oeffnet anschliessend automatisch das Dashboard im Standardbrowser."""
+und oeffnet anschliessend automatisch das Dashboard im Standardbrowser.
+
+Entwickler-Hinweis: Alles Relevante (Konfiguration, jeder BLE-Vorgang, jede
+Exception in jedem Thread) wird nach data/app.log geloggt - auch nachdem
+das Konsolenfenster geschlossen wurde. Bei einem Absturz zuerst dort
+nachsehen bzw. im Dashboard unter "Server" (/api/logs)."""
 import logging
 import threading
 import time
@@ -8,28 +13,37 @@ import webbrowser
 from app.ble_client import BleManager
 from app.config import load_config
 from app.devices import DeviceStore
+from app.logging_setup import setup_logging
 from app.server import create_app
 from app.state import AppState
 from app.storage import Storage
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("start")
 
 
 def main() -> None:
     config = load_config()
+    setup_logging(
+        config.log_path,
+        level=config.log_level,
+        max_bytes=config.log_max_bytes,
+        backup_count=config.log_backup_count,
+    )
+    logger.info("=== TP357S-Anwendung startet ===")
+    logger.info("Effektive Konfiguration: %s", config.as_json_dict())
 
-    state = AppState()
+    state = AppState(device_log_buffer_size=config.device_log_buffer_size)
     storage = Storage(config.db_path)
     devices = DeviceStore(config.devices_path)
+    logger.info("Gekoppelte Geraete geladen: %s", [d.mac for d in devices.list()])
 
     ble = BleManager(config, state, storage)
     ble.start()
 
     for record in devices.list():
-        ble.add_device(record.mac, record.name)
+        ble.add_device(record.mac, record.name, is_probe=False)
 
-    app = create_app(state, storage, ble, devices)
+    app = create_app(config, state, storage, ble, devices)
     url = f"http://{config.web_host}:{config.web_port}/"
 
     def open_browser() -> None:
@@ -39,11 +53,21 @@ def main() -> None:
         except Exception:
             logger.warning("Konnte Browser nicht automatisch oeffnen. Bitte manuell aufrufen: %s", url)
 
-    threading.Thread(target=open_browser, daemon=True).start()
+    threading.Thread(target=open_browser, daemon=True, name="open-browser").start()
 
     logger.info("TP357S-Anwendung laeuft. Dashboard: %s", url)
-    app.run(host=config.web_host, port=config.web_port, threaded=True, use_reloader=False)
+    try:
+        app.run(host=config.web_host, port=config.web_port, threaded=True, use_reloader=False)
+    except Exception:
+        logger.critical("Flask-Server ist abgestuerzt", exc_info=True)
+        raise
+    finally:
+        logger.warning("app.run() ist zurueckgekehrt, Prozess beendet sich jetzt.")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        logger.critical("TP357S-Anwendung wurde durch eine unbehandelte Exception beendet", exc_info=True)
+        raise

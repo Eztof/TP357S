@@ -7,42 +7,76 @@
 <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-<header>
-  <h1>ThermoPro TP357S Monitor</h1>
-</header>
-<main>
-  <section class="card">
-    <h2>Sensoren suchen</h2>
-    <div class="toolbar">
-      <label>Scan-Dauer (Sek.): <input id="scan-duration" type="number" value="8" min="2" max="30" /></label>
-      <button id="scan-btn">Nach Sensoren suchen</button>
-      <span id="scan-status" class="muted"></span>
-    </div>
-    <ul id="scan-results" class="device-list"></ul>
-  </section>
+<h1>TP357S Monitor (Dev-Ansicht)</h1>
 
-  <section class="card">
-    <h2>Meine Sensoren</h2>
-    <p id="no-devices" class="muted">Noch keine Sensoren gekoppelt. Oben suchen und hinzufügen.</p>
-    <ul id="device-list" class="device-list"></ul>
-  </section>
-
-  <section class="card">
-    <h2>Verlauf</h2>
-    <div class="toolbar">
-      <label>Sensor: <select id="history-device"></select></label>
-      <label>Anzahl Datensätze: <input id="history-count" type="number" value="500" min="1" max="5000" /></label>
-      <button id="fetch-history-btn">Verlauf vom Sensor abrufen</button>
-      <a id="export-link" href="/api/export.csv">CSV-Export</a>
+<section>
+  <h2>Server</h2>
+  <div class="row">
+    <div class="col">
+      <h3>Konfiguration (/api/config)</h3>
+      <pre id="config-dump">lade…</pre>
     </div>
-    <p id="history-info" class="muted"></p>
-    <canvas id="chart" width="800" height="200"></canvas>
-    <table>
-      <thead><tr><th>Zeitstempel (geschätzt)</th><th>Temperatur °C</th><th>Luftfeuchte %</th></tr></thead>
-      <tbody id="history-body"></tbody>
-    </table>
-  </section>
-</main>
+    <div class="col">
+      <h3>Debug (/api/debug)</h3>
+      <pre id="debug-dump">lade…</pre>
+    </div>
+  </div>
+  <h3>
+    Log (/api/logs)
+    <label>Zeilen: <input id="log-lines" type="number" value="300" min="20" max="5000" /></label>
+    <label><input id="log-autoscroll" type="checkbox" checked /> Auto-Scroll</label>
+  </h3>
+  <pre id="log-view" class="log-box">lade…</pre>
+</section>
+
+<section>
+  <h2>BLE-Scan</h2>
+  <div class="row">
+    <label>Dauer (Sek.): <input id="scan-duration" type="number" value="8" min="2" max="60" /></label>
+    <button id="scan-btn">Scan starten</button>
+    <span id="scan-status"></span>
+  </div>
+  <table id="scan-table">
+    <thead>
+      <tr>
+        <th>Name</th><th>MAC</th><th>RSSI</th><th>TX-Power</th>
+        <th>Service-UUIDs</th><th>Manufacturer-Data</th><th>Service-Data</th>
+        <th>Details (raw)</th><th>Aktionen</th>
+      </tr>
+    </thead>
+    <tbody id="scan-body"></tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Geräte (gekoppelt + Live-Test)</h2>
+  <table id="device-table">
+    <thead>
+      <tr>
+        <th>Name</th><th>MAC</th><th>Typ</th><th>Status</th><th>Seit</th>
+        <th>Live-Wert</th><th>Fehler</th><th>Pakete</th><th>Aktionen</th>
+      </tr>
+    </thead>
+    <tbody id="device-body"></tbody>
+  </table>
+  <div id="device-logs"></div>
+</section>
+
+<section>
+  <h2>Verlauf</h2>
+  <div class="row">
+    <label>Sensor: <select id="history-device"></select></label>
+    <label>Anzahl Datensätze: <input id="history-count" type="number" value="500" min="1" max="5000" /></label>
+    <button id="fetch-history-btn">Verlauf vom Sensor abrufen</button>
+    <a id="export-link" href="/api/export.csv">CSV-Export</a>
+  </div>
+  <pre id="history-info"></pre>
+  <table>
+    <thead><tr><th>Zeitstempel (geschätzt)</th><th>Temperatur °C</th><th>Luftfeuchte %</th></tr></thead>
+    <tbody id="history-body"></tbody>
+  </table>
+</section>
+
 <script src="/app.js"></script>
 </body>
 </html>

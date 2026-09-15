@@ -1,12 +1,18 @@
 # TP357S Monitor
 
-Kleine Computeranwendung, die per Bluetooth LE Live-Messwerte und die
-gespeicherte Historie von **ThermoPro TP357S**-Sensoren (Temperatur/
-Luftfeuchte) ausliest, lokal in einer SQLite-Datenbank speichert und den
-Status als Dashboard über `localhost` im Browser anzeigt. Sensoren werden
-direkt im Dashboard per BLE-Scan gesucht, gekoppelt, umbenannt und einzeln
-entfernt — es gibt **mehrere Sensoren gleichzeitig**, keine manuell
-einzutragende MAC-Adresse mehr.
+Computeranwendung, die per Bluetooth LE Live-Messwerte und die gespeicherte
+Historie von **ThermoPro TP357S**-Sensoren (Temperatur/Luftfeuchte)
+ausliest, lokal in einer SQLite-Datenbank speichert und den Status über
+`localhost` im Browser anzeigt. Sensoren werden direkt im Dashboard per
+BLE-Scan gesucht, gekoppelt, umbenannt und einzeln entfernt — mehrere
+Sensoren gleichzeitig, keine manuell einzutragende MAC-Adresse.
+
+Das Dashboard ist bewusst ein reines Entwickler-Werkzeug: keine grafische
+Gestaltung, sondern maximale Informationsdichte — rohe Scan-Daten (alle
+Advertisement-Felder), ein Live-Rohdaten-Feed (Hex + Dekodierung) für jedes
+gefundene UND jedes gekoppelte Gerät, die volle effektive Konfiguration,
+ein Debug-Status (Threads/Tasks/Verbindungen) und ein live nachladendes
+Logfile — alles direkt im Browser, nichts muss man sich zusammensuchen.
 
 ## Ordnerstruktur
 
@@ -22,12 +28,14 @@ TP357S/
     ble_client.py          # BLE-Scan + Verbindungen (läuft im Hintergrund-Thread)
     devices.py              # Liste gekoppelter Sensoren (data/devices.json)
     storage.py                # SQLite-Speicherung (Live-Werte + Historie, je Sensor)
-    state.py                   # geteilter Programmstatus (alle Sensoren + Scan)
-    server.py                   # lokaler Webserver (Flask) + JSON-API
-    static/                       # Dashboard (HTML/CSS/JS)
+    state.py                   # geteilter Programmstatus (alle Sensoren, Scan, Rohdaten-Logs)
+    logging_setup.py            # Logdatei + globale Crash-Hooks (Haupt-/Hintergrund-Threads, asyncio)
+    server.py                     # lokaler Webserver (Flask) + JSON-API
+    static/                         # Dashboard (HTML/CSS/JS, bewusst schmucklos)
   data/
-    tp357s.db                      # SQLite-Datenbank (wird automatisch angelegt)
-    devices.json                     # gekoppelte Sensoren (wird automatisch angelegt)
+    tp357s.db                        # SQLite-Datenbank (wird automatisch angelegt)
+    devices.json                       # gekoppelte Sensoren (wird automatisch angelegt)
+    app.log                              # Logdatei, rotierend (wird automatisch angelegt)
 ```
 
 ## Voraussetzungen
@@ -91,13 +99,33 @@ Nähe kurz ausschalten/aus der Reichweite bringen und erneut scannen.
 
 ## Funktionsumfang
 
-- **Scan:** `BleakScanner.discover(...)` über den Button „Nach Sensoren
-  suchen“, Ergebnisse (Name, MAC, RSSI) werden im Dashboard angezeigt.
-- **Mehrere Sensoren gleichzeitig:** jeder gekoppelte Sensor läuft als
-  eigene BLE-Verbindung mit eigener Wiederverbindungslogik.
-- **Live-Wert:** pro Sensor werden Notifications abonniert; jeder
-  eingehende 7-Byte-Live-Wert wird dekodiert, validiert (−40…85 °C,
-  0…100 %) und in `live_readings` gespeichert (mit MAC-Zuordnung).
+- **Scan:** `BleakScanner.discover(..., return_adv=True)` über den Button
+  „Scan starten“. Die Ergebnistabelle zeigt **alle** von bleak gelieferten
+  Rohdaten je Gerät: Name/local_name, MAC, RSSI, TX-Power,
+  Service-UUIDs, Manufacturer-Data (roh als Hex je Company-ID),
+  Service-Data (roh als Hex je UUID) sowie Backend-Rohdaten
+  (`device.details` / `adv.platform_data`) — nicht gefiltert auf
+  ThermoPro-Geräte, da der TP357S im Advertising ggf. keinen eindeutigen
+  Namen sendet.
+- **Live-Test (Probe):** Bei jedem Scan-Treffer gibt es neben „Hinzufügen“
+  auch „Live-Test“ — verbindet sich sofort und zeigt den Rohdaten-Feed,
+  **ohne** das Gerät dauerhaft zu koppeln (nicht in `devices.json`
+  gespeichert). Über „Übernehmen“ lässt sich eine laufende Live-Test-
+  Verbindung jederzeit in eine dauerhafte Kopplung umwandeln, ohne die
+  Verbindung neu aufzubauen.
+- **Mehrere Sensoren gleichzeitig:** jeder gekoppelte oder getestete Sensor
+  läuft als eigene BLE-Verbindung mit eigener Wiederverbindungslogik,
+  parallel in derselben Event-Loop.
+- **Live-Rohdaten-Feed pro Gerät:** für jedes Gerät (gekoppelt oder
+  Live-Test) zeigt ein eigenes Log-Panel jedes empfangene Notification-
+  Paket (Hex-Dump, Länge, Dekodierungsergebnis oder „nicht dekodierbar“)
+  sowie jeden gesendeten Schreibbefehl bei einem Verlaufs-Abruf — nicht
+  nur der letzte Wert, sondern der volle Verlauf der letzten
+  `device_log_buffer_size` Pakete (Standard: 500), abrufbar auch direkt
+  über `/api/devices/<mac>/log`.
+- **Live-Wert:** jeder gültige 7-Byte-Live-Wert wird dekodiert, validiert
+  (−40…85 °C, 0…100 %) und in `live_readings` gespeichert (mit
+  MAC-Zuordnung).
 - **Historie:** Über den Button „Verlauf vom Sensor abrufen“ (Verlauf-
   Bereich, Sensor per Dropdown auswählbar) wird die interne Aufzeichnung
   abgerufen und in `history_readings` gespeichert. Da die Datensätze
@@ -107,6 +135,35 @@ Nähe kurz ausschalten/aus der Reichweite bringen und erneut scannen.
 - **Umbenennen/Entfernen:** jederzeit im Dashboard möglich.
 - **CSV-Export:** `/api/export.csv?mac=<MAC>` bzw. Link im Dashboard
   (ohne `mac`-Parameter werden alle Sensoren exportiert).
+
+## Debugging / Absturz analysieren
+
+Alles landet in **`data/app.log`** (rotierend, Standard 5×5 MB) — auch nach
+Schließen des Konsolenfensters, auch aus Hintergrund-Threads, auch aus der
+asyncio-Event-Loop des BLE-Threads:
+
+- Jede unbehandelte Exception in **jedem** Thread wird geloggt
+  (`sys.excepthook` + `threading.excepthook`), nicht nur im Hauptthread.
+- Jede unbehandelte Exception in der asyncio-Loop wird über einen
+  eigenen `loop.set_exception_handler` geloggt statt nur nach stderr
+  durchzurutschen.
+- Jede Flask-Route hat einen globalen `errorhandler(Exception)`: eine
+  fehlerhafte Anfrage crasht den Server nicht, sondern liefert Status 500
+  mit vollem Traceback als JSON zurück UND loggt ihn.
+- Jeder BLE-Verbindungsversuch, jeder Statuswechsel, jedes empfangene und
+  gesendete Rohpaket wird geloggt (Level `DEBUG`).
+
+Im Dashboard direkt einsehbar, ohne auf die Festplatte zu müssen:
+
+- **„Server“-Bereich:** Config-Dump (`/api/config`), Debug-Dump
+  (`/api/debug` — Loop-Status, lebende Threads/Tasks, verbundene Clients,
+  Uptime, bleak-Version) und ein live nachladendes Log-Fenster
+  (`/api/logs?lines=N`, Standard alle 2 s).
+- Falls die App komplett abgestürzt ist (Prozess weg, Dashboard nicht mehr
+  erreichbar): `data/app.log` direkt öffnen — der letzte Eintrag vor dem
+  Abbruch zeigt in aller Regel die Ursache. `start.bat`/`start.sh` schließen
+  das Konsolenfenster nicht automatisch, daher steht der Traceback i. d. R.
+  auch dort.
 
 ## ⚠️ Wichtiger Hinweis zum Verlaufs-Abruf
 

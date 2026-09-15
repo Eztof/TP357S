@@ -1,10 +1,18 @@
+// Dev-Dashboard: bewusst keine "schoene" UI, sondern maximale Informationsdichte.
+
+const configDumpEl = document.getElementById("config-dump");
+const debugDumpEl = document.getElementById("debug-dump");
+const logViewEl = document.getElementById("log-view");
+const logLinesInput = document.getElementById("log-lines");
+const logAutoscrollInput = document.getElementById("log-autoscroll");
+
 const scanBtn = document.getElementById("scan-btn");
 const scanDurationInput = document.getElementById("scan-duration");
 const scanStatusEl = document.getElementById("scan-status");
-const scanResultsEl = document.getElementById("scan-results");
+const scanBody = document.getElementById("scan-body");
 
-const deviceListEl = document.getElementById("device-list");
-const noDevicesEl = document.getElementById("no-devices");
+const deviceBody = document.getElementById("device-body");
+const deviceLogsEl = document.getElementById("device-logs");
 
 const historyDeviceSelect = document.getElementById("history-device");
 const historyCountInput = document.getElementById("history-count");
@@ -12,24 +20,19 @@ const fetchHistoryBtn = document.getElementById("fetch-history-btn");
 const exportLink = document.getElementById("export-link");
 const historyInfoEl = document.getElementById("history-info");
 const historyBody = document.getElementById("history-body");
-const canvas = document.getElementById("chart");
-const ctx = canvas.getContext("2d");
 
-const STATUS_LABELS = {
-  connecting: "Verbinde…",
-  connected: "Verbunden",
-  disconnected: "Getrennt",
-  fetching_history: "Lade Verlauf…",
-  error: "Fehler",
-};
-
-let knownDevices = [];
-let selectedHistoryMac = null;
 let pairedMacs = new Set();
+let selectedHistoryMac = null;
+const trackedDeviceLogs = new Map(); // mac -> { el, intervalId }
 
 async function fetchJSON(url, options) {
   const res = await fetch(url, options);
-  const data = await res.json().catch(() => null);
+  let data = null;
+  try {
+    data = await res.json();
+  } catch (e) {
+    // kein JSON, z.B. bei /api/logs (text/plain) - Aufrufer kuemmert sich selbst
+  }
   if (!res.ok) {
     const message = (data && data.error) || `HTTP ${res.status}`;
     throw new Error(message);
@@ -37,23 +40,53 @@ async function fetchJSON(url, options) {
   return data;
 }
 
-function fmt(n, digits = 1) {
-  return typeof n === "number" ? n.toFixed(digits) : "–";
+function escapeHtml(s) {
+  const div = document.createElement("div");
+  div.textContent = s == null ? "" : String(s);
+  return div.innerHTML;
 }
 
 function toLocalTime(isoUtc) {
-  if (!isoUtc) return "–";
+  if (!isoUtc) return "-";
   const withZone = isoUtc.endsWith("Z") || isoUtc.includes("+") ? isoUtc : isoUtc + "Z";
   return new Date(withZone).toLocaleString();
 }
 
-function statusBadgeClass(status) {
-  if (status === "connected") return "ok";
-  if (status === "error") return "err";
-  return "warn";
+// -- Server: Config / Debug / Log --------------------------------------------
+
+async function refreshConfig() {
+  try {
+    const data = await fetchJSON("/api/config");
+    configDumpEl.textContent = JSON.stringify(data, null, 2);
+  } catch (e) {
+    configDumpEl.textContent = "Fehler: " + e.message;
+  }
 }
 
-// -- Scan -------------------------------------------------------------------
+async function refreshDebug() {
+  try {
+    const data = await fetchJSON("/api/debug");
+    debugDumpEl.textContent = JSON.stringify(data, null, 2);
+  } catch (e) {
+    debugDumpEl.textContent = "Fehler: " + e.message;
+  }
+}
+
+async function refreshLog() {
+  try {
+    const lines = parseInt(logLinesInput.value, 10) || 300;
+    const res = await fetch(`/api/logs?lines=${lines}`);
+    const text = await res.text();
+    logViewEl.textContent = text;
+    if (logAutoscrollInput.checked) {
+      logViewEl.scrollTop = logViewEl.scrollHeight;
+    }
+  } catch (e) {
+    logViewEl.textContent = "Fehler beim Laden des Logs: " + e.message;
+  }
+}
+
+// -- Scan ---------------------------------------------------------------------
 
 scanBtn.addEventListener("click", async () => {
   const duration = parseInt(scanDurationInput.value, 10) || 8;
@@ -66,35 +99,52 @@ scanBtn.addEventListener("click", async () => {
   }
 });
 
-function renderScanResults(results, scanning) {
-  scanStatusEl.textContent = scanning ? "Scanne…" : results.length ? "" : "Noch keine Suche gestartet.";
+function fmtObj(obj) {
+  if (obj == null) return "";
+  const keys = Object.keys(obj);
+  if (!keys.length) return "{}";
+  return keys.map((k) => `${k}=${obj[k]}`).join(", ");
+}
+
+function renderScanResults(results, scanning, scanError) {
+  scanStatusEl.textContent = scanning
+    ? "scanne…"
+    : scanError
+    ? "Fehler: " + scanError
+    : `${results.length} Treffer`;
   scanBtn.disabled = scanning;
 
-  scanResultsEl.innerHTML = "";
+  scanBody.innerHTML = "";
   results.forEach((r) => {
-    const li = document.createElement("li");
-    li.className = "device-item";
+    const tr = document.createElement("tr");
     const already = pairedMacs.has(r.mac.toUpperCase());
-    li.innerHTML = `
-      <div class="device-main">
-        <span class="device-name">${escapeHtml(r.name)}</span>
-        <span class="device-mac">${r.mac}${r.rssi != null ? " · " + r.rssi + " dBm" : ""}</span>
-      </div>
-      <div class="device-actions"></div>
+    tr.innerHTML = `
+      <td>${escapeHtml(r.name)}${r.local_name && r.local_name !== r.name ? " (" + escapeHtml(r.local_name) + ")" : ""}</td>
+      <td class="mono">${r.mac}</td>
+      <td>${r.rssi != null ? r.rssi : "-"}</td>
+      <td>${r.tx_power != null ? r.tx_power : "-"}</td>
+      <td class="mono small">${escapeHtml((r.service_uuids || []).join(", "))}</td>
+      <td class="mono small">${escapeHtml(fmtObj(r.manufacturer_data))}</td>
+      <td class="mono small">${escapeHtml(fmtObj(r.service_data))}</td>
+      <td class="mono small">${escapeHtml(r.device_details)} / ${escapeHtml(r.adv_platform_data)}</td>
+      <td class="actions"></td>
     `;
-    const actions = li.querySelector(".device-actions");
+    const actions = tr.querySelector(".actions");
     if (already) {
       const span = document.createElement("span");
-      span.className = "muted";
-      span.textContent = "bereits gekoppelt";
+      span.textContent = "gekoppelt";
       actions.appendChild(span);
     } else {
-      const btn = document.createElement("button");
-      btn.textContent = "Hinzufügen";
-      btn.addEventListener("click", () => addDevice(r.mac, r.name));
-      actions.appendChild(btn);
+      const addBtn = document.createElement("button");
+      addBtn.textContent = "Hinzufügen";
+      addBtn.addEventListener("click", () => addDevice(r.mac, r.name));
+      const probeBtn = document.createElement("button");
+      probeBtn.textContent = "Live-Test";
+      probeBtn.addEventListener("click", () => startProbe(r.mac, r.name));
+      actions.appendChild(addBtn);
+      actions.appendChild(probeBtn);
     }
-    scanResultsEl.appendChild(li);
+    scanBody.appendChild(tr);
   });
 }
 
@@ -106,46 +156,96 @@ async function addDevice(mac, suggestedName) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mac, name }),
     });
-    refreshStatus();
+    refreshAll();
   } catch (e) {
     alert("Sensor konnte nicht hinzugefügt werden: " + e.message);
   }
 }
 
-// -- Gekoppelte Geraete ------------------------------------------------------
+async function startProbe(mac, suggestedName) {
+  try {
+    await fetchJSON("/api/probe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mac, name: suggestedName || mac }),
+    });
+    refreshAll();
+  } catch (e) {
+    alert("Live-Test konnte nicht gestartet werden: " + e.message);
+  }
+}
+
+async function stopProbe(mac) {
+  try {
+    await fetchJSON(`/api/probe/${encodeURIComponent(mac)}/stop`, { method: "POST" });
+    refreshAll();
+  } catch (e) {
+    alert("Live-Test konnte nicht gestoppt werden: " + e.message);
+  }
+}
+
+async function promoteProbe(mac, currentName) {
+  const name = prompt("Name für diesen Sensor (wird dauerhaft gespeichert):", currentName) || currentName;
+  try {
+    await fetchJSON(`/api/probe/${encodeURIComponent(mac)}/promote`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    refreshAll();
+  } catch (e) {
+    alert("Übernehmen fehlgeschlagen: " + e.message);
+  }
+}
+
+// -- Geraete ------------------------------------------------------------------
 
 function renderDevices(devices) {
-  pairedMacs = new Set(devices.map((d) => d.mac.toUpperCase()));
-  noDevicesEl.style.display = devices.length ? "none" : "block";
+  pairedMacs = new Set(devices.filter((d) => !d.is_probe).map((d) => d.mac.toUpperCase()));
 
-  deviceListEl.innerHTML = "";
+  deviceBody.innerHTML = "";
   devices.forEach((d) => {
-    const li = document.createElement("li");
-    li.className = "device-item";
-    li.innerHTML = `
-      <div class="device-main">
-        <span class="device-name">${escapeHtml(d.name)}</span>
-        <span class="badge ${statusBadgeClass(d.status)}">${STATUS_LABELS[d.status] || d.status}</span>
-        <span class="device-mac">${d.mac}</span>
-        ${d.last_error ? `<span class="error">${escapeHtml(d.last_error)}</span>` : ""}
-        <div class="live-inline">
-          ${d.last_live
-            ? `${fmt(d.last_live.temperature_c)} °C · ${fmt(d.last_live.humidity_pct, 0)} % ` +
-              `${d.last_live.battery_pct != null ? "· 🔋" + d.last_live.battery_pct + "%" : ""} ` +
-              `<span class="muted">(${toLocalTime(d.last_live_ts)})</span>`
-            : '<span class="muted">noch kein Messwert</span>'}
-        </div>
-      </div>
-      <div class="device-actions">
-        <button data-action="rename">Umbenennen</button>
-        <button data-action="remove" class="danger">Entfernen</button>
-      </div>
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(d.name)}</td>
+      <td class="mono">${d.mac}</td>
+      <td>${d.is_probe ? "Live-Test" : "gekoppelt"}</td>
+      <td>${escapeHtml(d.status)}</td>
+      <td class="small">${toLocalTime(d.last_status_change)}</td>
+      <td class="mono">${
+        d.last_live
+          ? `${d.last_live.temperature_c.toFixed(1)}°C ${d.last_live.humidity_pct}% batt=${d.last_live.battery_pct}` +
+            ` @ ${toLocalTime(d.last_live_ts)}`
+          : "-"
+      }</td>
+      <td class="error">${d.last_error ? escapeHtml(d.last_error) : ""}</td>
+      <td>${d.packet_count}</td>
+      <td class="actions"></td>
     `;
-    li.querySelector('[data-action="rename"]').addEventListener("click", () => renameDevice(d.mac, d.name));
-    li.querySelector('[data-action="remove"]').addEventListener("click", () => removeDevice(d.mac, d.name));
-    deviceListEl.appendChild(li);
+    const actions = tr.querySelector(".actions");
+    if (d.is_probe) {
+      const promoteBtn = document.createElement("button");
+      promoteBtn.textContent = "Übernehmen";
+      promoteBtn.addEventListener("click", () => promoteProbe(d.mac, d.name));
+      const stopBtn = document.createElement("button");
+      stopBtn.textContent = "Stoppen";
+      stopBtn.addEventListener("click", () => stopProbe(d.mac));
+      actions.appendChild(promoteBtn);
+      actions.appendChild(stopBtn);
+    } else {
+      const renameBtn = document.createElement("button");
+      renameBtn.textContent = "Umbenennen";
+      renameBtn.addEventListener("click", () => renameDevice(d.mac, d.name));
+      const removeBtn = document.createElement("button");
+      removeBtn.textContent = "Entfernen";
+      removeBtn.addEventListener("click", () => removeDevice(d.mac, d.name));
+      actions.appendChild(renameBtn);
+      actions.appendChild(removeBtn);
+    }
+    deviceBody.appendChild(tr);
   });
 
+  updateDeviceLogPanels(devices);
   updateHistoryDeviceOptions(devices);
 }
 
@@ -158,7 +258,7 @@ async function renameDevice(mac, currentName) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     });
-    refreshStatus();
+    refreshAll();
   } catch (e) {
     alert("Umbenennen fehlgeschlagen: " + e.message);
   }
@@ -168,19 +268,65 @@ async function removeDevice(mac, name) {
   if (!confirm(`Sensor "${name}" wirklich entfernen? (Gespeicherte Messwerte bleiben erhalten)`)) return;
   try {
     await fetchJSON(`/api/devices/${encodeURIComponent(mac)}`, { method: "DELETE" });
-    refreshStatus();
+    refreshAll();
   } catch (e) {
     alert("Entfernen fehlgeschlagen: " + e.message);
   }
 }
 
-function escapeHtml(s) {
-  const div = document.createElement("div");
-  div.textContent = s == null ? "" : String(s);
-  return div.innerHTML;
+// -- Live-Rohdaten-Feed pro Geraet (gefunden ODER gekoppelt) -----------------
+
+function updateDeviceLogPanels(devices) {
+  const currentMacs = new Set(devices.map((d) => d.mac));
+
+  for (const [mac, entry] of trackedDeviceLogs) {
+    if (!currentMacs.has(mac)) {
+      clearInterval(entry.intervalId);
+      entry.container.remove();
+      trackedDeviceLogs.delete(mac);
+    }
+  }
+
+  devices.forEach((d) => {
+    let entry = trackedDeviceLogs.get(d.mac);
+    if (!entry) {
+      const container = document.createElement("div");
+      container.className = "device-log-panel";
+      const header = document.createElement("h4");
+      container.appendChild(header);
+      const pre = document.createElement("pre");
+      pre.className = "log-box small";
+      container.appendChild(pre);
+      deviceLogsEl.appendChild(container);
+
+      const intervalId = setInterval(() => fetchDeviceLog(d.mac, pre), 2000);
+      entry = { container, header, pre, intervalId };
+      trackedDeviceLogs.set(d.mac, entry);
+      fetchDeviceLog(d.mac, pre);
+    }
+    entry.header.textContent = `${d.name} (${d.mac}) — ${d.status}${d.is_probe ? " [Live-Test]" : ""} — ${d.packet_count} Pakete`;
+  });
 }
 
-// -- Verlauf ------------------------------------------------------------------
+async function fetchDeviceLog(mac, pre) {
+  try {
+    const entries = await fetchJSON(`/api/devices/${encodeURIComponent(mac)}/log?limit=200`);
+    const lines = entries.map((e) => {
+      const parts = [toLocalTime(e.ts), `[${e.kind}]`];
+      if (e.hex) parts.push(`hex=${e.hex}`);
+      if (e.len != null) parts.push(`len=${e.len}`);
+      if (e.decoded) parts.push(`decoded=${JSON.stringify(e.decoded)}`);
+      if (e.note) parts.push(e.note);
+      return parts.join(" ");
+    });
+    pre.textContent = lines.join("\n") || "(noch keine Pakete)";
+    pre.scrollTop = pre.scrollHeight;
+  } catch (e) {
+    pre.textContent = "Fehler beim Laden: " + e.message;
+  }
+}
+
+// -- Verlauf --------------------------------------------------------------------
 
 function updateHistoryDeviceOptions(devices) {
   const previous = historyDeviceSelect.value;
@@ -188,7 +334,7 @@ function updateHistoryDeviceOptions(devices) {
   devices.forEach((d) => {
     const opt = document.createElement("option");
     opt.value = d.mac;
-    opt.textContent = d.name;
+    opt.textContent = `${d.name} (${d.mac})`;
     historyDeviceSelect.appendChild(opt);
   });
 
@@ -236,68 +382,40 @@ async function refreshHistory() {
   try {
     const rows = await fetchJSON(`/api/devices/${encodeURIComponent(selectedHistoryMac)}/history?limit=200`);
     historyBody.innerHTML = "";
-    rows.slice(0, 50).forEach((r) => {
+    rows.forEach((r) => {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${toLocalTime(r.ts)}</td><td>${fmt(r.temperature_c)}</td><td>${fmt(
-        r.humidity_pct,
-        0
-      )}</td>`;
+      tr.innerHTML = `<td>${toLocalTime(r.ts)}</td><td>${r.temperature_c.toFixed(1)}</td><td>${r.humidity_pct}</td>`;
       historyBody.appendChild(tr);
     });
-    drawChart(rows.slice().reverse());
   } catch (e) {
-    // stiller Fehlschlag ist ok, z.B. wenn gerade kein Sensor ausgewaehlt ist
+    historyInfoEl.textContent = "Fehler beim Laden des Verlaufs: " + e.message;
   }
 }
 
-function drawChart(rows) {
-  const w = canvas.width;
-  const h = canvas.height;
-  ctx.clearRect(0, 0, w, h);
-  if (!rows.length) return;
+// -- Status-Polling -------------------------------------------------------------
 
-  const temps = rows.map((r) => r.temperature_c);
-  const min = Math.min(...temps);
-  const max = Math.max(...temps);
-  const pad = 10;
-  const scaleX = (w - 2 * pad) / Math.max(1, rows.length - 1);
-  const scaleY = max === min ? 0 : (h - 2 * pad) / (max - min);
-
-  ctx.strokeStyle = "#2563eb";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  rows.forEach((r, i) => {
-    const x = pad + i * scaleX;
-    const y = h - pad - (r.temperature_c - min) * scaleY;
-    if (i === 0) {
-      ctx.moveTo(x, y);
-    } else {
-      ctx.lineTo(x, y);
-    }
-  });
-  ctx.stroke();
-}
-
-// -- Status-Polling -----------------------------------------------------------
-
-async function refreshStatus() {
+async function refreshAll() {
   try {
     const data = await fetchJSON("/api/status");
-    renderScanResults(data.scan_results || [], data.scanning);
+    renderScanResults(data.scan_results || [], data.scanning, data.scan_error);
     renderDevices(data.devices || []);
-    if (data.devices && data.devices.length) {
-      const current = data.devices.find((d) => d.mac === selectedHistoryMac);
-      if (current && current.last_history_count != null) {
-        historyInfoEl.textContent = `Letzter Abruf: ${current.last_history_count} Datensätze (${toLocalTime(
-          current.last_history_ts
-        )})`;
-      }
+    const current = (data.devices || []).find((d) => d.mac === selectedHistoryMac);
+    if (current && current.last_history_count != null) {
+      historyInfoEl.textContent = `Letzter Abruf: ${current.last_history_count} Datensätze @ ${toLocalTime(
+        current.last_history_ts
+      )}`;
     }
   } catch (e) {
-    scanStatusEl.textContent = "Keine Verbindung zum lokalen Server";
+    scanStatusEl.textContent = "Keine Verbindung zum lokalen Server: " + e.message;
   }
 }
 
-refreshStatus();
-setInterval(refreshStatus, 3000);
+refreshAll();
+refreshConfig();
+refreshDebug();
+refreshLog();
+
+setInterval(refreshAll, 2000);
+setInterval(refreshDebug, 3000);
+setInterval(refreshLog, 2000);
 setInterval(refreshHistory, 15000);

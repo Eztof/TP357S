@@ -5,5 +5,10 @@
   "web_host": "127.0.0.1",
   "web_port": 5000,
   "db_path": "data/tp357s.db",
-  "devices_path": "data/devices.json"
+  "devices_path": "data/devices.json",
+  "log_path": "data/app.log",
+  "log_level": "DEBUG",
+  "log_max_bytes": 5000000,
+  "log_backup_count": 5,
+  "device_log_buffer_size": 500
 }
