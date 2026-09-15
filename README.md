@@ -404,25 +404,49 @@ Admin-Zugriff. Es muss und wird nichts an den Rules des Projekts verändert.
 
 **Eine flache Collection** (alle Sensoren zusammen, Standardname
 `readings`) statt einer Unter-Collection pro Sensor — einfacher zu pflegen
-und für Firestore-Abfragen genauso leistungsfähig. Ein Dokument pro
-Messwert:
+und für Firestore-Abfragen genauso leistungsfähig.
+
+**Wichtig (Kosten):** Firestore berechnet pro **Schreiboperation**, nicht
+pro Byte. Ein Dokument je Einzelmesswert würde bei jedem 10-Minuten-Tick
+pro Sensor mehrere Writes erzeugen — unnötig teuer bei vielen Sensoren
+und/oder häufigen Messungen. Stattdessen wird **pro Sensor pro
+Upload-Durchlauf genau EIN Dokument** geschrieben, das alle seit dem
+letzten Durchlauf neuen Messwerte als Array enthält:
 
 ```json
 {
   "mac": "AA:BB:CC:DD:EE:FF",
   "name": "Wohnzimmer",
-  "ts": "2026-09-15T21:00:00+00:00",
-  "temperature_c": 21.5,
-  "humidity_pct": 55,
-  "source": "live",
-  "synced_at": "2026-09-15T21:05:03+00:00"
+  "synced_at": "2026-09-15T21:05:03+00:00",
+  "count": 3,
+  "readings": [
+    { "ts": "2026-09-15T20:55:00+00:00", "temperature_c": 21.4, "humidity_pct": 54, "source": "history" },
+    { "ts": "2026-09-15T21:00:00+00:00", "temperature_c": 21.5, "humidity_pct": 55, "source": "live" },
+    { "ts": "2026-09-15T21:04:12+00:00", "temperature_c": 21.5, "humidity_pct": 55, "source": "live" }
+  ]
 }
 ```
 
-`source` ist `"live"` oder `"history"`. Für Abfragen nach Sensor + Zeitraum
-lohnt sich ein zusammengesetzter Index auf `(mac, ts)` in der Firestore-
-Konsole, falls Firestore danach fragt (Composite-Index-Vorschlag erscheint
-automatisch bei der ersten entsprechenden Abfrage mit `where`+`orderBy`).
+Ergebnis: bei z. B. 3 Sensoren und 10-Minuten-Intervall sind das nur noch
+**ca. 432 Schreiboperationen/Tag** insgesamt (statt potenziell tausenden
+bei einem Dokument je Messwert) — unabhängig davon, wie viele Messwerte in
+so einem Zeitraum tatsächlich angefallen sind. Einzige Ausnahme: enthält
+ein einzelner Durchlauf sehr viele neue Messwerte (z. B. der allererste
+volle Verlaufsabruf eines neuen Sensors mit mehreren tausend Datensätzen),
+wird auf mehrere Dokumente aufgeteilt (`FIRESTORE_MAX_READINGS_PER_DOC` =
+5000 in `app/firebase_sync.py`), um Firestores 1-MiB-Dokumentlimit sicher
+einzuhalten — auch dann bleibt die Anzahl der Schreiboperationen weit unter
+„ein Write pro Messwert“.
+
+`source` in jedem Array-Eintrag ist `"live"` oder `"history"`. Für Abfragen
+nach Sensor + Zeitraum lohnt sich ein zusammengesetzter Index auf
+`(mac, synced_at)` in der Firestore-Konsole, falls Firestore danach fragt.
+Da die Messwerte pro Dokument in einem Array liegen, sind serverseitige
+Abfragen nach einzelnen Messwert-Zeitstempeln (nicht `synced_at` des ganzen
+Batches) mit reinen Firestore-Queries nicht direkt möglich — dafür müsste
+man die `readings`-Arrays client-seitig nach dem Laden filtern. Für den
+Anwendungsfall hier (Rohdaten-Backup + gelegentliche Auswertung) ist das
+ein bewusster Kompromiss zugunsten deutlich niedrigerer Kosten.
 
 **Fortschritt wird lokal verfolgt**, nicht in Firestore: SQLite-Tabelle
 `firebase_sync_state` merkt sich je Sensor die zuletzt hochgeladene
@@ -430,6 +454,14 @@ automatisch bei der ersten entsprechenden Abfrage mit `where`+`orderBy`).
 dem letzten Mal neu dazugekommen ist — kein Firestore-Read nötig, um das
 herauszufinden (spart Kosten/Latenz), funktioniert auch über
 Neustarts hinweg weiter.
+
+**Hinweis zu bereits hochgeladenen Altdaten:** Vor dieser Umstellung wurde
+kurzzeitig ein Dokument je Einzelmesswert geschrieben. Diese alten
+Dokumente wurden bewusst NICHT gelöscht/migriert (kein zusätzliches
+Lösch-/Migrationsrisiko) und stehen einfach neben den neuen, gebündelten
+Dokumenten in derselben Collection — beide Formate sind an der Anzahl der
+Felder (`readings`-Array vorhanden oder nicht) unterscheidbar, falls das
+für eine spätere Auswertung relevant wird.
 
 ## Datenschutz / Speicherort
 

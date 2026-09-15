@@ -8,9 +8,22 @@ fuer Admin-Zugriff vom eigenen Server. Es wird daher nichts an den
 Firestore-Regeln des Projekts veraendert oder vorausgesetzt.
 
 Datenmodell: EINE flache Collection (Standard-Name "readings", konfigurierbar
-ueber firebase_collection in config.json) fuer alle Sensoren zusammen, ein
-Dokument pro Messwert:
-    {mac, name, ts, temperature_c, humidity_pct, source: "live"|"history", synced_at}
+ueber firebase_collection in config.json) fuer alle Sensoren zusammen -
+ABER: nicht ein Dokument pro Messwert, sondern ein Dokument pro Sensor PRO
+UPLOAD-DURCHLAUF, das ein Array aller in diesem Durchlauf neuen Messwerte
+enthaelt:
+    {mac, name, synced_at, count, readings: [{ts, temperature_c,
+     humidity_pct, source: "live"|"history"}, ...]}
+
+Grund: Firestore berechnet pro SCHREIBOPERATION, nicht pro Byte - ein
+Dokument pro Einzelmesswert (die urspruengliche Variante) erzeugt bei
+haeufigen kleinen Sync-Durchlaeufen unnoetig viele abgerechnete Writes.
+Buendeln aller neuen Messwerte eines Durchlaufs in ein Dokument reduziert
+das auf 1 Write pro Sensor pro Durchlauf (Standard: alle 10 Minuten) -
+unabhaengig davon, ob darin 1 oder 500 Messwerte stecken. Nur bei sehr
+grossen Batches (z.B. der allererste volle Verlaufsabruf) wird auf mehrere
+Dokumente aufgeteilt, um das 1-MiB-Dokumentlimit von Firestore sicher
+einzuhalten (siehe FIRESTORE_MAX_READINGS_PER_DOC).
 
 Fortschritt wird lokal in SQLite verfolgt (Storage.get_sync_cursor/
 set_sync_cursor, Tabelle firebase_sync_state: letzte hochgeladene id je
@@ -29,7 +42,13 @@ from .storage import Storage
 
 logger = logging.getLogger(__name__)
 
-FIRESTORE_BATCH_LIMIT = 500  # harte Firestore-Grenze pro Batch-Write
+# Konservativ weit unter Firestores 1-MiB-Dokumentlimit gehalten (grobe
+# Schaetzung: ~100-150 Bytes je Messwert-Eintrag inkl. Feldnamen/Overhead;
+# 5000 Eintraege bleiben damit auch mit Sicherheitsmarge weit darunter).
+# Betrifft in der Praxis nur den allerersten, sehr grossen Verlaufsabruf
+# eines neuen Sensors - normale Sync-Durchlaeufe haben nur wenige Eintraege
+# und landen ohnehin in einem einzigen Dokument.
+FIRESTORE_MAX_READINGS_PER_DOC = 5000
 
 
 class FirebaseSync:
@@ -93,7 +112,8 @@ class FirebaseSync:
 
     def _upload_tick(self) -> None:
         collection = self._client.collection(self.config.firebase_collection)
-        total_uploaded = 0
+        total_readings = 0
+        total_writes = 0
         per_device: dict = {}
 
         for record in self.devices.list():
@@ -106,37 +126,42 @@ class FirebaseSync:
                 continue
 
             synced_at = datetime.now(timezone.utc).isoformat()
-            docs = []
+            readings = []
             for r in live_rows:
-                docs.append({
-                    "mac": mac, "name": record.name, "ts": r["ts"],
-                    "temperature_c": r["temperature_c"], "humidity_pct": r["humidity_pct"],
-                    "source": "live", "synced_at": synced_at,
+                readings.append({
+                    "ts": r["ts"], "temperature_c": r["temperature_c"],
+                    "humidity_pct": r["humidity_pct"], "source": "live",
                 })
             for r in history_rows:
-                docs.append({
-                    "mac": mac, "name": record.name, "ts": r["ts"],
-                    "temperature_c": r["temperature_c"], "humidity_pct": r["humidity_pct"],
-                    "source": "history", "synced_at": synced_at,
+                readings.append({
+                    "ts": r["ts"], "temperature_c": r["temperature_c"],
+                    "humidity_pct": r["humidity_pct"], "source": "history",
                 })
 
-            uploaded = self._write_batched(collection, docs)
-            total_uploaded += uploaded
+            writes = self._write_bundled(collection, mac, record.name, synced_at, readings)
+            total_readings += len(readings)
+            total_writes += writes
 
             new_live_id = live_rows[-1]["id"] if live_rows else last_live_id
             new_history_id = history_rows[-1]["id"] if history_rows else last_history_id
             self.storage.set_sync_cursor(mac, new_live_id, new_history_id)
 
-            per_device[mac] = {"uploaded": uploaded, "live": len(live_rows), "history": len(history_rows)}
+            per_device[mac] = {
+                "readings": len(readings), "writes": writes, "live": len(live_rows), "history": len(history_rows),
+            }
             logger.info(
-                "Firebase-Upload fuer %s: %d live + %d history = %d Dokumente",
-                mac, len(live_rows), len(history_rows), uploaded,
+                "Firebase-Upload fuer %s: %d live + %d history = %d Messwerte in %d Dokument(en)",
+                mac, len(live_rows), len(history_rows), len(readings), writes,
             )
 
         self.last_upload_at = datetime.now(timezone.utc).isoformat()
-        self.last_result = {"ok": True, "total_uploaded": total_uploaded, "per_device": per_device}
-        if total_uploaded:
-            logger.info("Firebase-Upload abgeschlossen: %d Dokumente insgesamt", total_uploaded)
+        self.last_result = {"ok": True, "total_readings": total_readings, "total_writes": total_writes, "per_device": per_device}
+        if total_readings:
+            logger.info(
+                "Firebase-Upload abgeschlossen: %d Messwerte in %d Dokument(en) geschrieben (kostenrelevant ist "
+                "die Dokumentanzahl, nicht die Messwertanzahl)",
+                total_readings, total_writes,
+            )
         else:
             logger.debug("Firebase-Upload: nichts Neues hochzuladen")
 
@@ -164,16 +189,24 @@ class FirebaseSync:
             self.last_verified_count = None
             self.last_verify_error = f"{type(exc).__name__}: {exc}"
 
-    def _write_batched(self, collection, docs: list) -> int:
-        uploaded = 0
-        for i in range(0, len(docs), FIRESTORE_BATCH_LIMIT):
-            chunk = docs[i:i + FIRESTORE_BATCH_LIMIT]
-            batch = self._client.batch()
-            for doc in chunk:
-                batch.set(collection.document(), doc)
-            batch.commit()
-            uploaded += len(chunk)
-        return uploaded
+    def _write_bundled(self, collection, mac: str, name: str, synced_at: str, readings: list) -> int:
+        """Schreibt alle uebergebenen Messwerte eines Sensors als moeglichst
+        WENIGE Dokumente (Standardfall: genau eines, unabhaengig von der
+        Anzahl Messwerte darin) statt einem Dokument je Messwert - das ist
+        die abgerechnete Groesse bei Firestore, nicht die Messwertanzahl.
+        Gibt die Anzahl geschriebener Dokumente zurueck."""
+        if not readings:
+            return 0
+        chunks = [
+            readings[i : i + FIRESTORE_MAX_READINGS_PER_DOC]
+            for i in range(0, len(readings), FIRESTORE_MAX_READINGS_PER_DOC)
+        ]
+        for chunk in chunks:
+            collection.document().set({
+                "mac": mac, "name": name, "synced_at": synced_at,
+                "count": len(chunk), "readings": chunk,
+            })
+        return len(chunks)
 
     def snapshot(self) -> dict:
         return {
