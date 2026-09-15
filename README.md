@@ -169,6 +169,38 @@ Im Dashboard direkt einsehbar, ohne auf die Festplatte zu müssen:
   Abbruch zeigt in aller Regel die Ursache. `start.bat`/`start.sh` schließen
   das Konsolenfenster nicht automatisch, daher steht der Traceback i. d. R.
   auch dort.
+- `start.bat`/`start.sh` starten die App seit Kurzem automatisch neu, falls
+  der Prozess beendet wird (egal ob durch Absturz oder normales Beenden) —
+  5 Sekunden Countdown, danach automatischer Neustart. Zum endgültigen
+  Beenden das Konsolenfenster schließen oder mehrfach Strg+C drücken.
+  Gekoppelte Sensoren werden dabei automatisch aus `data/devices.json`
+  wieder verbunden.
+
+### Bekanntes Problem: Prozess stirbt beim Verbinden, ganz ohne Traceback
+
+Falls im Log (oder in der Konsole) **kein** Python-Traceback erscheint,
+sondern der Prozess beim Verbinden zu einem Sensor (`Verbinde zu ...`)
+einfach komplett verschwindet: Das ist **kein** normaler Python-Fehler —
+sonst hätten ihn die Crash-Hooks oben zuverlässig geloggt. Es handelt sich
+um einen **nativen Absturz** (Access Violation) im Windows-Bluetooth-
+Backend, auf das `bleak` unter Windows zwingend angewiesen ist (die
+`winrt-*`-Pakete). Ein solcher Absturz reißt den kompletten Python-Prozess
+sofort runter, bevor überhaupt eine Python-Exception geworfen werden kann
+— dagegen kann kein Try/Except und kein Logging von innen etwas ausrichten.
+
+Meist betrifft das sehr neue Python-Versionen (3.14+), für die die
+`winrt`-Bindungen (noch) nicht zuverlässig funktionieren. Abhilfe:
+
+1. Python 3.11 oder 3.12 installieren (die für `bleak`/`winrt` unter
+   Windows am besten getesteten Versionen).
+2. Den `venv`-Ordner löschen.
+3. `start.bat` erneut ausführen — legt die virtuelle Umgebung mit der
+   dann aktiven Python-Version neu an. `start.bat` warnt inzwischen auch
+   selbst, falls es eine Python-3.14+-Umgebung erkennt.
+
+Der eingebaute Auto-Neustart (siehe oben) sorgt in der Zwischenzeit
+zumindest dafür, dass die App nach einem solchen Absturz automatisch
+wieder hochkommt, statt dauerhaft down zu bleiben.
 
 ## ⚠️ Wichtiger Hinweis zum Verlaufs-Abruf
 
