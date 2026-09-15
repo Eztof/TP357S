@@ -819,12 +819,16 @@ async function refreshFirebaseStatus() {
     }
     firebaseUploadNowBtn.disabled = false;
     const parts = [
+      `Projekt: ${s.project_id || "?"}`,
       `Collection: ${s.collection}`,
       `Intervall: ${Math.round(s.upload_interval_seconds / 60)} Min.`,
       s.last_upload_at ? `letzter Lauf: ${toLocalTime(s.last_upload_at)}` : "noch kein Lauf",
+      s.last_verified_count_in_firestore !== null && s.last_verified_count_in_firestore !== undefined
+        ? `in Firestore verifiziert: ${s.last_verified_count_in_firestore} Dokument(e) in der Collection`
+        : (s.last_verify_error ? `Verifikation fehlgeschlagen: ${s.last_verify_error}` : "noch nicht verifiziert"),
     ];
     firebaseStatusEl.textContent = parts.join(" · ");
-    firebaseDetailEl.textContent = s.last_result ? JSON.stringify(s.last_result, null, 2) : "(noch kein Ergebnis)";
+    firebaseDetailEl.textContent = JSON.stringify(s, null, 2);
   } catch (e) {
     firebaseStatusEl.textContent = "Fehler: " + e.message;
   }

@@ -39,8 +39,11 @@ class FirebaseSync:
         self.devices = devices
         self._thread: Optional[threading.Thread] = None
         self._client = None
+        self._project_id: Optional[str] = None
         self.last_upload_at: Optional[str] = None
         self.last_result: Optional[dict] = None
+        self.last_verified_count: Optional[int] = None
+        self.last_verify_error: Optional[str] = None
 
     def start(self) -> None:
         if not self.config.firebase_enabled:
@@ -59,8 +62,13 @@ class FirebaseSync:
         cred = credentials.Certificate(str(path))
         app = firebase_admin.initialize_app(cred)
         self._client = firestore.client(app)
-        logger.info("Firebase Admin SDK initialisiert (Projekt: %s, Collection: %s)",
-                    cred.project_id, self.config.firebase_collection)
+        self._project_id = cred.project_id
+        logger.info(
+            "Firebase Admin SDK initialisiert (Projekt: %s, Datenbank: (default), Collection: %s). "
+            "Zum Pruefen in der Firebase-Konsole: Projekt '%s' -> Firestore Database (NICHT Realtime "
+            "Database) -> Datenbank '(default)' -> Collection '%s'.",
+            cred.project_id, self.config.firebase_collection, cred.project_id, self.config.firebase_collection,
+        )
 
     def _run_loop(self) -> None:
         try:
@@ -132,6 +140,30 @@ class FirebaseSync:
         else:
             logger.debug("Firebase-Upload: nichts Neues hochzuladen")
 
+        self._verify_remote_count(collection)
+
+    def _verify_remote_count(self, collection) -> None:
+        """Liest die Dokumentanzahl der Collection direkt aus Firestore
+        zurueck (Aggregation-Query, zaehlt serverseitig, kein Download aller
+        Dokumente noetig) - reiner Ehrlichkeits-Check: batch.commit() wirft
+        zwar eine Exception, wenn etwas schiefgeht, aber ein Blick auf die
+        tatsaechlich in Firestore vorhandene Anzahl macht fuer den Nutzer
+        sofort im Dashboard sichtbar, ob die Daten WIRKLICH angekommen sind
+        (z.B. falls im Firebase-Konsole aus Versehen das falsche Projekt
+        oder die Realtime Database statt Firestore angeschaut wird)."""
+        try:
+            agg = collection.count().get()
+            self.last_verified_count = int(agg[0][0].value)
+            self.last_verify_error = None
+            logger.info(
+                "Firestore-Verifikation: Collection '%s' im Projekt '%s' enthaelt aktuell %d Dokument(e) insgesamt.",
+                self.config.firebase_collection, self._project_id, self.last_verified_count,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Firestore-Verifikation (Dokumentanzahl auslesen) fehlgeschlagen")
+            self.last_verified_count = None
+            self.last_verify_error = f"{type(exc).__name__}: {exc}"
+
     def _write_batched(self, collection, docs: list) -> int:
         uploaded = 0
         for i in range(0, len(docs), FIRESTORE_BATCH_LIMIT):
@@ -146,11 +178,15 @@ class FirebaseSync:
     def snapshot(self) -> dict:
         return {
             "enabled": self.config.firebase_enabled,
+            "project_id": self._project_id,
+            "database": "(default)",
             "collection": self.config.firebase_collection,
             "upload_interval_seconds": self.config.firebase_upload_interval_seconds,
             "initial_delay_seconds": self.config.firebase_upload_initial_delay_seconds,
             "last_upload_at": self.last_upload_at,
             "last_result": self.last_result,
+            "last_verified_count_in_firestore": self.last_verified_count,
+            "last_verify_error": self.last_verify_error,
         }
 
     def trigger_now(self) -> None:
