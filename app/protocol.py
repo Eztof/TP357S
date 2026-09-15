@@ -151,6 +151,19 @@ def build_time_sync_command(dt: Optional[datetime] = None) -> bytes:
     return payload + bytes([checksum(payload)])
 
 
+def build_time_shaped_candidate(prefix: bytes, dt: Optional[datetime] = None) -> bytes:
+    """Baut ein Kandidaten-Kommando im selben Feldschema wie
+    build_time_sync_command()/build_data_request_command() (Praefix +
+    aktuelle Datumsfelder YY MM DD HH MM SS DOW + Checksumme), aber mit
+    frei waehlbarem Praefix statt der (noch unbekannten) Konstante
+    TIME_SYNC_OPCODE. Zum Durchprobieren moeglicher Uhrzeit-Sync-Opcodes
+    ueber die Rohbefehl-Konsole im Dashboard, ohne Code aendern und die
+    App neu starten zu muessen."""
+    dt = dt or datetime.now()
+    payload = prefix + _bcd_datetime_fields(dt)
+    return payload + bytes([checksum(payload)])
+
+
 def build_data_request_command(count: int, dt: Optional[datetime] = None) -> bytes:
     dt = dt or datetime.now()
     count = max(0, min(count, 0xFFFF))

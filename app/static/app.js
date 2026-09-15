@@ -340,11 +340,29 @@ function updateDeviceLogPanels(devices) {
       writeRow.appendChild(exampleBtn);
       container.appendChild(writeRow);
 
+      const candidateRow = document.createElement("div");
+      candidateRow.className = "row";
+      const prefixInput = document.createElement("input");
+      prefixInput.type = "text";
+      prefixInput.placeholder = "Praefix, z.B. 0101";
+      prefixInput.size = 12;
+      const candidateBtn = document.createElement("button");
+      candidateBtn.textContent = "Zeit-Kandidat bauen →";
+      candidateBtn.title =
+        "Baut Praefix + aktuelles Datum + Checksumme (gleiches Schema wie die bekannte Datenanfrage) " +
+        "und traegt es oben ins Sendefeld ein";
+      candidateBtn.addEventListener("click", () => buildTimeCandidate(prefixInput, hexInput));
+      candidateRow.appendChild(prefixInput);
+      candidateRow.appendChild(candidateBtn);
+      container.appendChild(candidateRow);
+
       const hint = document.createElement("p");
       hint.className = "small";
       hint.textContent =
-        "Testidee: \"Beispiel einfügen\" klicken, \"Rohbefehl senden\" klicken, unten im Feed beobachten " +
-        "(reicht die Datenanfrage allein, ohne die 3 unbekannten Vorbereitungs-Kommandos?).";
+        "Testidee 1: \"Beispiel einfügen\" → \"Rohbefehl senden\" → Feed beobachten " +
+        "(reicht die Datenanfrage allein, ohne die 3 unbekannten Vorbereitungs-Kommandos?). " +
+        "Testidee 2: Praefix (z.B. 0101, 0102, ... 0108 — Geschwister von 0109) eintragen, " +
+        "\"Zeit-Kandidat bauen\" → \"Rohbefehl senden\" → Feed beobachten.";
       container.appendChild(hint);
 
       const pre = document.createElement("pre");
@@ -413,6 +431,20 @@ async function insertExample(hexInput) {
     hexInput.value = res.data_request_hex;
   } catch (e) {
     alert("Beispiel konnte nicht geladen werden: " + e.message);
+  }
+}
+
+async function buildTimeCandidate(prefixInput, hexInput) {
+  const prefix = prefixInput.value.trim();
+  if (!prefix) {
+    alert("Bitte Praefix eintragen (z.B. 0101).");
+    return;
+  }
+  try {
+    const res = await fetchJSON(`/api/protocol/time-shaped-candidate?prefix=${encodeURIComponent(prefix)}`);
+    hexInput.value = res.hex;
+  } catch (e) {
+    alert("Kandidat konnte nicht gebaut werden: " + e.message);
   }
 }
 

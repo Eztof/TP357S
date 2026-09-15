@@ -154,12 +154,19 @@ Nähe kurz ausschalten/aus der Reichweite bringen und erneut scannen.
   praktisch für einen ersten Test ganz ohne eigenes Wissen über das
   Protokoll: Button klicken, „Rohbefehl senden“ klicken, im Feed direkt
   darunter beobachten, ob eine Antwort kommt.
+- **Zeit-Kandidat bauen (pro Gerät):** eigenes Eingabefeld unterhalb der
+  Rohbefehl-Konsole. Praefix eintragen (z. B. `0101`), Button klicken —
+  baut `Praefix + aktuelles Datum (YY MM DD HH MM SS DOW) + Checksumme`
+  (`GET /api/protocol/time-shaped-candidate?prefix=...`, gleiches Schema
+  wie das bekannte Datenanfrage-Kommando) und trägt das Ergebnis direkt ins
+  Sendefeld ein. Erspart das manuelle Ausrechnen von Datum und Checksumme
+  bei jedem Testversuch.
 
 ## Wie komme ich an die drei fehlenden Verlaufs-Kommandos?
 
 Reines Ausprobieren zufälliger Bytes bringt bei den drei unbekannten
 Kommandos (Uhrzeit-Sync, Session-Init, Offset) wenig — der Byte-Raum ist
-zu groß. Zwei sinnvolle Wege:
+zu groß. Drei sinnvolle Wege, der Reihe nach:
 
 **1. Erst mal testen, ob sie überhaupt nötig sind.** Manche Sensoren
 akzeptieren eine Datenanfrage auch ohne die vorgeschalteten
@@ -170,8 +177,27 @@ ganze Lösung (dann bitte melden, dann trage ich es direkt als
 Sonderfall in `app/protocol.py` ein). Kommt nichts oder eine Fehlerantwort,
 sind die drei Kommandos vermutlich wirklich nötig.
 
-**2. BLE-Sniff der offiziellen ThermoPro-App** (zuverlässigster Weg, wenn
-1. nicht reicht) — auf Android, ohne Root:
+**2. Begründet raten mit „Zeit-Kandidat bauen“.** Da das bekannte
+Datenanfrage-Kommando `01 09` heißt, ist es plausibel, dass Uhrzeit-Sync
+ein Geschwister-Kommando mit demselben `01`-Präfix ist. Präfixe `0101`
+bis `0108` der Reihe nach durchprobieren (jeweils: Präfix eintragen →
+„Zeit-Kandidat bauen“ → „Rohbefehl senden“ → Feed beobachten, ob eine
+Reaktion kommt). Das ist ein informierter Versuch, keine Garantie — aber
+kostenlos und schnell durchprobiert.
+
+**Wichtig zu wissen: Bluetooth lässt sich nicht wie WLAN „nebenbei“
+mitschneiden.** Koppelt man das Handy separat mit dem PC, sieht der PC
+dadurch **nicht** die andere Bluetooth-Verbindung zwischen Handy und
+Sensor — jede Bluetooth-Verbindung ist paarweise, kein gemeinsames Medium
+wie offenes WLAN. Um wirklich zu sehen, was die ThermoPro-App an den
+Sensor sendet, bleiben nur zwei Wege: das interne Bluetooth-Log des
+Handys (nächster Punkt) oder ein dedizierter BLE-Sniffer als separates
+drittes Gerät (Hardware wie ein Nordic-nRF52840-Dongle mit
+Sniffer-Firmware + Wireshark, zeichnet die Funkpakete zwischen Handy und
+Sensor unabhängig von beiden auf).
+
+**3. BLE-Sniff der offiziellen ThermoPro-App** (zuverlässigster Weg, wenn
+1./2. nicht reichen) — auf Android, ohne Root:
 
 1. Einstellungen → Über das Telefon → 7× auf „Build-Nummer“ tippen
    (aktiviert Entwickleroptionen), falls noch nicht aktiv.

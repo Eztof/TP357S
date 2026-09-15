@@ -181,6 +181,20 @@ def create_app(config: AppConfig, state: AppState, storage: Storage, ble: BleMan
             ),
         })
 
+    @app.get("/api/protocol/time-shaped-candidate")
+    def api_time_shaped_candidate():
+        """Baut ein Kandidaten-Kommando (Praefix + aktuelle Datumsfelder +
+        Checksumme) fuer einen frei gewaehlten Praefix - zum Durchprobieren
+        moeglicher Uhrzeit-Sync-Opcodes, ohne Datum/Checksumme von Hand
+        ausrechnen zu muessen."""
+        prefix_hex = (request.args.get("prefix") or "").strip().replace(" ", "")
+        try:
+            prefix = bytes.fromhex(prefix_hex)
+        except ValueError:
+            return jsonify({"ok": False, "error": "Ungueltige Hex-Zeichenkette"}), 400
+        candidate = protocol.build_time_shaped_candidate(prefix)
+        return jsonify({"ok": True, "hex": candidate.hex()})
+
     # -- Live-Test / Probe (temporaere, nicht gespeicherte Verbindung) -----------
 
     @app.post("/api/probe")
