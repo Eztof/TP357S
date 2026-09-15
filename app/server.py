@@ -15,7 +15,7 @@ from .config import AppConfig
 from .devices import DeviceStore
 from .logging_setup import tail_log_file
 from .state import AppState
-from .storage import Storage
+from .storage import Storage, aggregate_points
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +119,17 @@ def create_app(config: AppConfig, state: AppState, storage: Storage, ble: BleMan
     def api_device_history(mac):
         limit = request.args.get("limit", default=500, type=int)
         return jsonify(storage.recent_history(mac.upper(), limit=limit))
+
+    @app.get("/api/devices/<mac>/series")
+    def api_device_series(mac):
+        """Live- + Verlaufsdaten zusammengefuehrt und optional in Zeit-Buckets
+        gemittelt - Datenquelle fuer den Graphen im Dashboard."""
+        resolution = request.args.get("resolution", default="raw")
+        limit = request.args.get("limit", default=5000, type=int)
+        bucket_seconds = {"raw": 0, "5min": 300, "15min": 900, "hour": 3600, "day": 86400}.get(resolution, 0)
+        points = storage.combined_series(mac.upper(), limit=limit)
+        points = aggregate_points(points, bucket_seconds)
+        return jsonify({"ok": True, "resolution": resolution, "resolution_seconds": bucket_seconds, "points": points})
 
     @app.get("/api/devices/<mac>/log")
     def api_device_log(mac):

@@ -25,6 +25,12 @@ const exportLink = document.getElementById("export-link");
 const historyInfoEl = document.getElementById("history-info");
 const historyBody = document.getElementById("history-body");
 
+const graphResolutionSelect = document.getElementById("graph-resolution");
+const graphLimitInput = document.getElementById("graph-limit");
+const graphInfoEl = document.getElementById("graph-info");
+const graphTempSvg = document.getElementById("graph-temp");
+const graphHumSvg = document.getElementById("graph-hum");
+
 let pairedMacs = new Set();
 let selectedHistoryMac = null;
 const trackedDeviceLogs = new Map(); // mac -> { el, intervalId }
@@ -475,6 +481,7 @@ function updateHistoryDeviceOptions(devices) {
   exportLink.href = `/api/export.csv?mac=${encodeURIComponent(selectedHistoryMac)}`;
   if (changed) {
     refreshHistory();
+    refreshGraph();
   }
 }
 
@@ -482,6 +489,7 @@ historyDeviceSelect.addEventListener("change", () => {
   selectedHistoryMac = historyDeviceSelect.value;
   exportLink.href = `/api/export.csv?mac=${encodeURIComponent(selectedHistoryMac)}`;
   refreshHistory();
+  refreshGraph();
 });
 
 fetchHistoryBtn.addEventListener("click", async () => {
@@ -514,6 +522,173 @@ async function refreshHistory() {
   }
 }
 
+// -- Graph (SVG, Temperatur + Luftfeuchte, einstellbare Aufloesung) -----------
+
+const CHART_WIDTH = 900;
+const CHART_HEIGHT = 220;
+const CHART_PAD = { left: 45, right: 10, top: 10, bottom: 25 };
+const SVGNS = "http://www.w3.org/2000/svg";
+
+function formatChartTime(isoUtc, spanSeconds) {
+  const withZone = isoUtc.endsWith("Z") || isoUtc.includes("+") ? isoUtc : isoUtc + "Z";
+  const d = new Date(withZone);
+  if (spanSeconds > 3 * 86400) {
+    return d.toLocaleDateString();
+  }
+  return d.toLocaleString([], { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+function svgEl(name, attrs) {
+  const el = document.createElementNS(SVGNS, name);
+  for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, v);
+  return el;
+}
+
+function renderChart(svg, points, valueKey, color) {
+  const w = CHART_WIDTH, h = CHART_HEIGHT;
+  const { left, right, top, bottom } = CHART_PAD;
+  svg.innerHTML = "";
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+
+  if (!points.length) {
+    svg.appendChild(svgEl("text", { x: w / 2, y: h / 2, "text-anchor": "middle", class: "axis-label" })).textContent =
+      "(keine Daten)";
+    return;
+  }
+
+  const values = points.map((p) => p[valueKey]);
+  let minV = Math.min(...values);
+  let maxV = Math.max(...values);
+  if (minV === maxV) {
+    minV -= 1;
+    maxV += 1;
+  }
+  const vPad = (maxV - minV) * 0.08;
+  minV -= vPad;
+  maxV += vPad;
+
+  const times = points.map((p) => {
+    const iso = p.ts.endsWith("Z") || p.ts.includes("+") ? p.ts : p.ts + "Z";
+    return new Date(iso).getTime();
+  });
+  const minT = times[0];
+  const maxT = times[times.length - 1];
+  const spanT = Math.max(1, maxT - minT);
+  const spanSeconds = spanT / 1000;
+
+  const xScale = (t) => left + ((t - minT) / spanT) * (w - left - right);
+  const yScale = (v) => top + (1 - (v - minV) / (maxV - minV)) * (h - top - bottom);
+
+  const gridCount = 4;
+  for (let i = 0; i <= gridCount; i++) {
+    const v = minV + ((maxV - minV) * i) / gridCount;
+    const y = yScale(v);
+    svg.appendChild(svgEl("line", { x1: left, x2: w - right, y1: y, y2: y, class: "grid-line" }));
+    svg.appendChild(svgEl("text", { x: left - 4, y: y + 3, "text-anchor": "end", class: "axis-label" })).textContent =
+      v.toFixed(1);
+  }
+
+  [0, Math.floor(points.length / 2), points.length - 1].forEach((idx) => {
+    if (idx < 0 || idx >= points.length) return;
+    const x = xScale(times[idx]);
+    const anchor = idx === 0 ? "start" : idx === points.length - 1 ? "end" : "middle";
+    svg.appendChild(svgEl("text", { x, y: h - 6, "text-anchor": anchor, class: "axis-label" })).textContent =
+      formatChartTime(points[idx].ts, spanSeconds);
+  });
+
+  let d = "";
+  points.forEach((p, i) => {
+    const x = xScale(times[i]);
+    const y = yScale(p[valueKey]);
+    d += (i === 0 ? "M" : "L") + x.toFixed(1) + "," + y.toFixed(1) + " ";
+  });
+  svg.appendChild(svgEl("path", { d: d.trim(), class: "series-line", stroke: color }));
+
+  const hoverLine = svg.appendChild(
+    svgEl("line", { class: "hover-line", y1: top, y2: h - bottom, visibility: "hidden" })
+  );
+  const hoverDot = svg.appendChild(svgEl("circle", { r: 4, class: "hover-dot", fill: color, visibility: "hidden" }));
+  const hoverBg = svg.appendChild(svgEl("rect", { class: "hover-text-bg", visibility: "hidden" }));
+  const hoverText = svg.appendChild(svgEl("text", { class: "hover-text", visibility: "hidden" }));
+
+  const overlay = svg.appendChild(
+    svgEl("rect", { x: left, y: top, width: w - left - right, height: h - top - bottom, fill: "transparent" })
+  );
+
+  function showHover(clientX) {
+    const rect = svg.getBoundingClientRect();
+    const svgX = ((clientX - rect.left) / rect.width) * w;
+    let nearest = 0;
+    let nearestDist = Infinity;
+    for (let i = 0; i < points.length; i++) {
+      const dist = Math.abs(xScale(times[i]) - svgX);
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        nearest = i;
+      }
+    }
+    const p = points[nearest];
+    const x = xScale(times[nearest]);
+    const y = yScale(p[valueKey]);
+
+    hoverLine.setAttribute("x1", x);
+    hoverLine.setAttribute("x2", x);
+    hoverLine.setAttribute("visibility", "visible");
+    hoverDot.setAttribute("cx", x);
+    hoverDot.setAttribute("cy", y);
+    hoverDot.setAttribute("visibility", "visible");
+
+    const label = `${formatChartTime(p.ts, spanSeconds)}  ${p[valueKey].toFixed(1)}`;
+    hoverText.textContent = label;
+    const textWidth = label.length * 6 + 8;
+    let textX = x + 8;
+    if (textX + textWidth > w - right) textX = x - textWidth - 8;
+    let textY = y - 10;
+    if (textY < top + 12) textY = y + 20;
+    hoverText.setAttribute("x", textX + 4);
+    hoverText.setAttribute("y", textY);
+    hoverText.setAttribute("visibility", "visible");
+    hoverBg.setAttribute("x", textX);
+    hoverBg.setAttribute("y", textY - 11);
+    hoverBg.setAttribute("width", textWidth);
+    hoverBg.setAttribute("height", 15);
+    hoverBg.setAttribute("visibility", "visible");
+  }
+
+  function hideHover() {
+    hoverLine.setAttribute("visibility", "hidden");
+    hoverDot.setAttribute("visibility", "hidden");
+    hoverText.setAttribute("visibility", "hidden");
+    hoverBg.setAttribute("visibility", "hidden");
+  }
+
+  overlay.addEventListener("mousemove", (e) => showHover(e.clientX));
+  overlay.addEventListener("mouseleave", hideHover);
+  overlay.addEventListener("touchmove", (e) => {
+    if (e.touches[0]) showHover(e.touches[0].clientX);
+  });
+}
+
+async function refreshGraph() {
+  if (!selectedHistoryMac) return;
+  const resolution = graphResolutionSelect.value;
+  const limit = parseInt(graphLimitInput.value, 10) || 2000;
+  try {
+    const res = await fetchJSON(
+      `/api/devices/${encodeURIComponent(selectedHistoryMac)}/series?resolution=${resolution}&limit=${limit}`
+    );
+    graphInfoEl.textContent =
+      `${res.points.length} Punkte` + (res.resolution_seconds ? ` (${res.resolution_seconds}s-Buckets, gemittelt)` : " (Rohdaten)");
+    renderChart(graphTempSvg, res.points, "temperature_c", "#2563eb");
+    renderChart(graphHumSvg, res.points, "humidity_pct", "#059669");
+  } catch (e) {
+    graphInfoEl.textContent = "Fehler: " + e.message;
+  }
+}
+
+graphResolutionSelect.addEventListener("change", refreshGraph);
+graphLimitInput.addEventListener("change", refreshGraph);
+
 // -- Status-Polling -------------------------------------------------------------
 
 async function refreshAll() {
@@ -541,3 +716,4 @@ setInterval(refreshAll, 2000);
 setInterval(refreshDebug, 5000);
 setInterval(refreshLog, 4000);
 setInterval(refreshHistory, 15000);
+setInterval(refreshGraph, 15000);

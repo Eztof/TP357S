@@ -134,3 +134,57 @@ pre {
 .device-log-panel {
   margin-bottom: 0.5rem;
 }
+
+.graph-box {
+  margin-bottom: 0.75rem;
+}
+
+.graph-box h3 {
+  margin-bottom: 0.1rem;
+}
+
+svg.chart {
+  width: 100%;
+  height: 220px;
+  background: #fff;
+  border: 1px solid #999;
+  display: block;
+}
+
+svg.chart .grid-line {
+  stroke: #ddd;
+  stroke-width: 1;
+}
+
+svg.chart .axis-label {
+  fill: #555;
+  font-size: 10px;
+  font-family: inherit;
+}
+
+svg.chart .series-line {
+  fill: none;
+  stroke-width: 2;
+}
+
+svg.chart .hover-line {
+  stroke: #999;
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+}
+
+svg.chart .hover-dot {
+  stroke: #fff;
+  stroke-width: 1;
+}
+
+svg.chart .hover-text {
+  font-size: 11px;
+  font-family: inherit;
+}
+
+svg.chart .hover-text-bg {
+  fill: #fff;
+  stroke: #999;
+  stroke-width: 1;
+}

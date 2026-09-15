@@ -92,6 +92,22 @@ class Storage:
             rows = cur.fetchall()
         return [{"ts": r[0], "temperature_c": r[1], "humidity_pct": r[2], "fetched_at": r[3]} for r in rows]
 
+    def combined_series(self, mac: str, limit: int = 5000) -> List[dict]:
+        """Live- und Verlaufswerte eines Sensors zusammengeführt, chronologisch
+        aufsteigend sortiert - Basis für den Graphen im Dashboard."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT ts, temperature_c, humidity_pct FROM ("
+                "  SELECT ts, temperature_c, humidity_pct FROM live_readings WHERE mac = ?"
+                "  UNION ALL"
+                "  SELECT ts_estimated, temperature_c, humidity_pct FROM history_readings WHERE mac = ?"
+                ") ORDER BY ts DESC LIMIT ?",
+                (mac, mac, limit),
+            )
+            rows = cur.fetchall()
+        rows.reverse()
+        return [{"ts": r[0], "temperature_c": r[1], "humidity_pct": r[2]} for r in rows]
+
     def export_csv_rows(self, mac: Optional[str] = None):
         with self._lock:
             if mac:
@@ -113,3 +129,38 @@ class Storage:
                     "ORDER BY 1, 3"
                 )
             return cur.fetchall()
+
+
+def aggregate_points(points: List[dict], bucket_seconds: int) -> List[dict]:
+    """Mittelt eine chronologisch sortierte Punktliste ({ts, temperature_c,
+    humidity_pct}) in feste Zeit-Buckets (z.B. 300 = 5-Minuten-Mittel).
+    bucket_seconds <= 0 bedeutet Rohdaten (keine Aggregation)."""
+    if bucket_seconds <= 0 or not points:
+        return points
+
+    buckets: dict = {}
+    order: List[int] = []
+    for p in points:
+        dt = datetime.fromisoformat(p["ts"])
+        epoch = dt.timestamp()
+        bucket_start = int(epoch // bucket_seconds) * bucket_seconds
+        bucket = buckets.get(bucket_start)
+        if bucket is None:
+            bucket = {"temp_sum": 0.0, "hum_sum": 0.0, "count": 0}
+            buckets[bucket_start] = bucket
+            order.append(bucket_start)
+        bucket["temp_sum"] += p["temperature_c"]
+        bucket["hum_sum"] += p["humidity_pct"]
+        bucket["count"] += 1
+
+    result = []
+    for bucket_start in order:
+        b = buckets[bucket_start]
+        ts = datetime.fromtimestamp(bucket_start, tz=timezone.utc).isoformat()
+        result.append({
+            "ts": ts,
+            "temperature_c": round(b["temp_sum"] / b["count"], 2),
+            "humidity_pct": round(b["hum_sum"] / b["count"], 1),
+            "count": b["count"],
+        })
+    return result

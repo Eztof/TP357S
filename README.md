@@ -150,6 +150,15 @@ Nähe kurz ausschalten/aus der Reichweite bringen und erneut scannen.
   hängt `sum(bytes) & 0xFF` als letztes Byte an. Nützlich zum Debuggen
   bzw. Experimentieren mit dem Protokoll direkt am echten Gerät, unabhängig
   vom normalen „Verlauf abrufen“-Ablauf.
+- **Graph (Verlauf-Bereich):** zwei SVG-Charts (Temperatur, Luftfeuchte —
+  bewusst getrennte Achsen statt einer gemeinsamen Dual-Achse), gespeist aus
+  Live- **und** Verlaufsdaten zusammengeführt und chronologisch sortiert
+  (`GET /api/devices/<mac>/series`). Auflösung einstellbar: Rohdaten,
+  5-/15-Minuten-, Stunden- oder Tages-Mittel (serverseitig in
+  `app/storage.py::aggregate_points` gebildet, nicht im Browser — bleibt
+  auch bei vielen Punkten schnell). Hover zeigt Zeitpunkt + Wert des
+  nächstgelegenen Punkts inkl. Fadenkreuz. „Punkte max.“ begrenzt, wie viele
+  Rohpunkte vor der Aggregation geladen werden.
 
 ## ⚠️ Batterie-Byte (Byte 6) ist unverifiziert
 

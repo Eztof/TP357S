@@ -78,6 +78,29 @@
     <a id="export-link" href="/api/export.csv">CSV-Export</a>
   </div>
   <pre id="history-info"></pre>
+
+  <div class="row">
+    <label>Auflösung:
+      <select id="graph-resolution">
+        <option value="raw">Rohdaten</option>
+        <option value="5min">5-Minuten-Mittel</option>
+        <option value="15min">15-Minuten-Mittel</option>
+        <option value="hour">Stunden-Mittel</option>
+        <option value="day">Tages-Mittel</option>
+      </select>
+    </label>
+    <label>Punkte max.: <input id="graph-limit" type="number" value="2000" min="10" max="20000" /></label>
+    <span id="graph-info" class="small"></span>
+  </div>
+  <div class="graph-box">
+    <h3>Temperatur °C</h3>
+    <svg id="graph-temp" class="chart" viewBox="0 0 900 220" preserveAspectRatio="none"></svg>
+  </div>
+  <div class="graph-box">
+    <h3>Luftfeuchte %</h3>
+    <svg id="graph-hum" class="chart" viewBox="0 0 900 220" preserveAspectRatio="none"></svg>
+  </div>
+
   <table>
     <thead><tr><th>Zeitstempel (geschätzt)</th><th>Temperatur °C</th><th>Luftfeuchte %</th></tr></thead>
     <tbody id="history-body"></tbody>
