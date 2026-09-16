@@ -48,7 +48,7 @@ def load_config() -> AppConfig:
             "config.json nicht gefunden, verwende config.example.json als Vorlage. "
             "Bitte config.json anlegen (Kopie von config.example.json)."
         )
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8-sig") as f:
         raw = json.load(f)
 
     config = AppConfig(

@@ -25,7 +25,7 @@ class DeviceStore:
     def _load(self) -> None:
         if not self._path.exists():
             return
-        with open(self._path, "r", encoding="utf-8") as f:
+        with open(self._path, "r", encoding="utf-8-sig") as f:
             raw = json.load(f)
         for item in raw:
             mac = item["mac"].upper()

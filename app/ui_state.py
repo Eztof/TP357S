@@ -27,7 +27,7 @@ class UiState:
         if not self.path.exists():
             return
         try:
-            with open(self.path, "r", encoding="utf-8") as f:
+            with open(self.path, "r", encoding="utf-8-sig") as f:
                 raw: Dict[str, Any] = json.load(f)
             collapsed = raw.get("collapsed")
             if isinstance(collapsed, dict):

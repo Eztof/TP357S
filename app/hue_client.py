@@ -73,7 +73,7 @@ class HueManager:
         if not self.config_path.exists():
             return
         try:
-            with open(self.config_path, "r", encoding="utf-8") as f:
+            with open(self.config_path, "r", encoding="utf-8-sig") as f:
                 raw = json.load(f)
             self.bridge_ip = raw.get("bridge_ip")
             self.application_key = raw.get("application_key")
