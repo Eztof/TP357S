@@ -505,9 +505,18 @@ datensammelnd/roh — was daraus gebaut wird, ist ein späterer Schritt.
    von einer neuen Kopplung nicht betroffen — jede App bekommt einen
    eigenen, unabhängigen `application_key`, keine ersetzt eine andere.
 3. Nach erfolgreicher Kopplung wird der `application_key` (Zugangs-Token)
-   zusammen mit Bridge-IP und Bridge-ID lokal in `data/hue_config.json`
-   gespeichert (wie die Firebase-Zugangsdaten in `.gitignore` eingetragen -
-   landet nicht im Repo). „Kopplung aufheben“ löscht diese lokal wieder.
+   zusammen mit Bridge-IP und Bridge-ID lokal in `hue_config.json` im
+   Projekt-Hauptordner gespeichert (**neben `start.bat`, NICHT in `data/`**
+   — wie die Firebase-Zugangsdaten in `.gitignore` eingetragen, landet
+   nicht im Repo). „Kopplung aufheben“ löscht diese lokal wieder.
+
+**Kopplung auf einem anderen Rechner/nach frischem Download wiederverwenden:**
+`hue_config.json` lässt sich 1:1 in einen neu heruntergeladenen/entpackten
+Projektordner kopieren — bereits VOR dem ersten Start, direkt neben
+`start.bat` (der Ordner `data/` existiert zu diesem Zeitpunkt noch nicht,
+er wird erst beim ersten Start automatisch angelegt). Die App ist dann
+beim ersten Start bereits gekoppelt, ganz ohne erneuten Tastendruck an der
+Bridge.
 
 ### Einmaliger Abruf
 
@@ -546,5 +555,5 @@ hochgeladen. Ohne Firebase-Upload gibt es keine Cloud-Anbindung; der
 Webserver lauscht standardmäßig nur auf `127.0.0.1` (nicht im Netzwerk
 erreichbar). Die Hue-Bridge-Anbindung bleibt vollständig im lokalen
 Heimnetz (kein Cloud-Zugriff auf die Bridge); der `application_key`
-liegt lokal in `data/hue_config.json`, wie die Firebase-Zugangsdaten
+liegt lokal in `hue_config.json` (Projekt-Hauptordner, neben `start.bat`), wie die Firebase-Zugangsdaten
 nicht im Repo.

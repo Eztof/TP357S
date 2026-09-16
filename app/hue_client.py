@@ -66,14 +66,25 @@ class HueManager:
 
         self._load()
 
-    # -- Persistenz (data/hue_config.json - enthaelt den application_key,   --
-    # -- daher wie firebase-service-account.json in .gitignore eingetragen) --
+    # -- Persistenz (hue_config.json im Projekt-Hauptordner - enthaelt den   --
+    # -- application_key, daher wie firebase-service-account.json in        --
+    # -- .gitignore eingetragen) ----------------------------------------------
 
     def _load(self) -> None:
-        if not self.config_path.exists():
-            return
+        path = self.config_path
+        if not path.exists():
+            # Fallback auf den fruehreren (fehlerhaften) Speicherort
+            # data/hue_config.json - wer die Datei schon dort abgelegt
+            # hatte (nach einer aelteren Anleitung), soll sie nicht manuell
+            # verschieben muessen.
+            legacy_path = path.parent / "data" / path.name
+            if legacy_path.exists():
+                path = legacy_path
+                logger.info("hue_config.json am alten Speicherort (%s) gefunden, lade von dort", legacy_path)
+            else:
+                return
         try:
-            with open(self.config_path, "r", encoding="utf-8-sig") as f:
+            with open(path, "r", encoding="utf-8-sig") as f:
                 raw = json.load(f)
             self.bridge_ip = raw.get("bridge_ip")
             self.application_key = raw.get("application_key")
@@ -81,7 +92,7 @@ class HueManager:
             if self.is_paired():
                 logger.info("Hue-Kopplung geladen: bridge_ip=%s bridge_id=%s", self.bridge_ip, self.bridge_id)
         except Exception:  # noqa: BLE001
-            logger.exception("Hue-Konfiguration (%s) konnte nicht geladen werden", self.config_path)
+            logger.exception("Hue-Konfiguration (%s) konnte nicht geladen werden", path)
 
     def _save(self) -> None:
         try:

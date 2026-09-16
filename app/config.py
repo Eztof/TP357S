@@ -60,7 +60,12 @@ def load_config() -> AppConfig:
         db_path=BASE_DIR / raw.get("db_path", "data/tp357s.db"),
         devices_path=BASE_DIR / raw.get("devices_path", "data/devices.json"),
         ui_state_path=BASE_DIR / raw.get("ui_state_path", "data/ui_state.json"),
-        hue_config_path=BASE_DIR / raw.get("hue_config_path", "data/hue_config.json"),
+        # Bewusst im Projekt-Hauptordner (nicht data/): data/ existiert bei
+        # einem frisch entpackten ZIP noch nicht (wird erst beim ersten
+        # Start angelegt) - der Nutzer soll die Datei aber schon VOR dem
+        # ersten Start dort platzieren koennen, genau wie
+        # firebase-service-account.json (gleiches Muster, gleicher Ort).
+        hue_config_path=BASE_DIR / raw.get("hue_config_path", "hue_config.json"),
         log_path=BASE_DIR / raw.get("log_path", "data/app.log"),
         log_level=raw.get("log_level", "DEBUG"),
         log_max_bytes=int(raw.get("log_max_bytes", 5_000_000)),
