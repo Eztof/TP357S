@@ -17,6 +17,7 @@ from .firebase_sync import FirebaseSync
 from .logging_setup import tail_log_file
 from .state import AppState
 from .storage import Storage, aggregate_points
+from .ui_state import UiState
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 def create_app(
     config: AppConfig, state: AppState, storage: Storage, ble: BleManager, devices: DeviceStore,
-    firebase: FirebaseSync,
+    firebase: FirebaseSync, ui_state: UiState,
 ) -> Flask:
     app = Flask(__name__, static_folder=None)
 
@@ -64,6 +65,21 @@ def create_app(
     @app.get("/api/debug")
     def api_debug():
         return jsonify(ble.debug_snapshot())
+
+    @app.get("/api/ui-state")
+    def api_get_ui_state():
+        return jsonify(ui_state.snapshot())
+
+    @app.post("/api/ui-state")
+    def api_set_ui_state():
+        payload = request.get_json(force=True, silent=True) or {}
+        collapsed = payload.get("collapsed")
+        active_tab = payload.get("active_tab")
+        ui_state.update(
+            collapsed=collapsed if isinstance(collapsed, dict) else None,
+            active_tab=active_tab if isinstance(active_tab, str) else None,
+        )
+        return jsonify({"ok": True})
 
     @app.get("/api/logs")
     def api_logs():

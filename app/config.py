@@ -20,6 +20,7 @@ class AppConfig:
     web_port: int
     db_path: Path
     devices_path: Path
+    ui_state_path: Path
     log_path: Path
     log_level: str
     log_max_bytes: int
@@ -57,6 +58,7 @@ def load_config() -> AppConfig:
         web_port=int(raw.get("web_port", 5000)),
         db_path=BASE_DIR / raw.get("db_path", "data/tp357s.db"),
         devices_path=BASE_DIR / raw.get("devices_path", "data/devices.json"),
+        ui_state_path=BASE_DIR / raw.get("ui_state_path", "data/ui_state.json"),
         log_path=BASE_DIR / raw.get("log_path", "data/app.log"),
         log_level=raw.get("log_level", "DEBUG"),
         log_max_bytes=int(raw.get("log_max_bytes", 5_000_000)),

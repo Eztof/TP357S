@@ -23,13 +23,13 @@ const historyCountInput = document.getElementById("history-count");
 const fetchHistoryBtn = document.getElementById("fetch-history-btn");
 const exportLink = document.getElementById("export-link");
 const historyInfoEl = document.getElementById("history-info");
-const historyBody = document.getElementById("history-body");
 
 const graphResolutionSelect = document.getElementById("graph-resolution");
 const graphLimitInput = document.getElementById("graph-limit");
 const graphInfoEl = document.getElementById("graph-info");
 const graphTempSvg = document.getElementById("graph-temp");
 const graphHumSvg = document.getElementById("graph-hum");
+const graphZoomResetBtn = document.getElementById("graph-zoom-reset-btn");
 
 const firebaseUploadNowBtn = document.getElementById("firebase-upload-now-btn");
 const firebaseStatusEl = document.getElementById("firebase-status");
@@ -65,6 +65,74 @@ function toLocalTime(isoUtc) {
   const withZone = isoUtc.endsWith("Z") || isoUtc.includes("+") ? isoUtc : isoUtc + "Z";
   return new Date(withZone).toLocaleString();
 }
+
+// -- Tabs + einklappbare Panels (Zustand serverseitig persistiert) -----------
+// Server statt localStorage, weil die Anforderung war "fuer den naechsten
+// Start des SERVERS gespeichert", nicht nur im selben Browser.
+
+const uiState = { collapsed: {}, active_tab: "sensors" };
+let uiStateSaveTimer = null;
+
+function saveUiState() {
+  clearTimeout(uiStateSaveTimer);
+  uiStateSaveTimer = setTimeout(() => {
+    fetchJSON("/api/ui-state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(uiState),
+    }).catch(() => {});
+  }, 150);
+}
+
+function applyPanelCollapsed(panel, collapsed) {
+  panel.classList.toggle("collapsed", collapsed);
+  const toggle = panel.querySelector(".panel-toggle");
+  if (toggle) toggle.textContent = collapsed ? "▸" : "▾";
+}
+
+function initPanels() {
+  document.querySelectorAll(".panel").forEach((panel) => {
+    const id = panel.dataset.panelId;
+    const header = panel.querySelector(".panel-header");
+    header.addEventListener("click", () => {
+      const collapsed = !panel.classList.contains("collapsed");
+      applyPanelCollapsed(panel, collapsed);
+      uiState.collapsed[id] = collapsed;
+      saveUiState();
+    });
+  });
+}
+
+function setActiveTab(tab, save) {
+  document.querySelectorAll(".tab-btn").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+  document.querySelectorAll(".tab-content").forEach((c) => c.classList.toggle("active", c.dataset.tab === tab));
+  uiState.active_tab = tab;
+  if (save) saveUiState();
+}
+
+function initTabs() {
+  document.querySelectorAll(".tab-btn").forEach((btn) => {
+    btn.addEventListener("click", () => setActiveTab(btn.dataset.tab, true));
+  });
+}
+
+async function loadUiState() {
+  try {
+    const s = await fetchJSON("/api/ui-state");
+    uiState.collapsed = s.collapsed || {};
+    uiState.active_tab = s.active_tab || "sensors";
+  } catch (e) {
+    // Server evtl. noch nicht bereit - mit Defaults weitermachen
+  }
+  document.querySelectorAll(".panel").forEach((panel) => {
+    applyPanelCollapsed(panel, !!uiState.collapsed[panel.dataset.panelId]);
+  });
+  setActiveTab(uiState.active_tab, false);
+}
+
+initPanels();
+initTabs();
+loadUiState();
 
 // -- Server: Config / Debug / Log --------------------------------------------
 
@@ -554,7 +622,6 @@ function updateHistoryDeviceOptions(devices) {
 
   if (!devices.length) {
     selectedHistoryMac = null;
-    historyBody.innerHTML = "";
     historyInfoEl.textContent = "";
     exportLink.href = "/api/export.csv";
     return;
@@ -566,7 +633,7 @@ function updateHistoryDeviceOptions(devices) {
   selectedHistoryMac = historyDeviceSelect.value;
   exportLink.href = `/api/export.csv?mac=${encodeURIComponent(selectedHistoryMac)}`;
   if (changed) {
-    refreshHistory();
+    zoomRange = null;
     refreshGraph();
   }
 }
@@ -574,7 +641,7 @@ function updateHistoryDeviceOptions(devices) {
 historyDeviceSelect.addEventListener("change", () => {
   selectedHistoryMac = historyDeviceSelect.value;
   exportLink.href = `/api/export.csv?mac=${encodeURIComponent(selectedHistoryMac)}`;
-  refreshHistory();
+  zoomRange = null;
   refreshGraph();
 });
 
@@ -593,27 +660,59 @@ fetchHistoryBtn.addEventListener("click", async () => {
   }
 });
 
-async function refreshHistory() {
-  if (!selectedHistoryMac) return;
-  try {
-    const rows = await fetchJSON(`/api/devices/${encodeURIComponent(selectedHistoryMac)}/history?limit=200`);
-    historyBody.innerHTML = "";
-    rows.forEach((r) => {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${toLocalTime(r.ts)}</td><td>${r.temperature_c.toFixed(1)}</td><td>${r.humidity_pct}</td>`;
-      historyBody.appendChild(tr);
-    });
-  } catch (e) {
-    historyInfoEl.textContent = "Fehler beim Laden des Verlaufs: " + e.message;
-  }
-}
-
 // -- Graph (SVG, Temperatur + Luftfeuchte, einstellbare Aufloesung) -----------
 
 const CHART_WIDTH = 900;
-const CHART_HEIGHT = 220;
-const CHART_PAD = { left: 45, right: 10, top: 10, bottom: 25 };
+const CHART_HEIGHT = 260;
+const CHART_PAD = { left: 48, right: 14, top: 16, bottom: 28 };
 const SVGNS = "http://www.w3.org/2000/svg";
+
+let lastGraphPoints = [];
+let lastResolutionSeconds = 0;
+let zoomRange = null; // {startMs, endMs} oder null = volle Aufloesung
+let gradientIdCounter = 0;
+
+function pointTimeMs(p) {
+  const iso = p.ts.endsWith("Z") || p.ts.includes("+") ? p.ts : p.ts + "Z";
+  return new Date(iso).getTime();
+}
+
+function pointsInZoom(points) {
+  if (!zoomRange) return points;
+  return points.filter((p) => {
+    const t = pointTimeMs(p);
+    return t >= zoomRange.startMs && t <= zoomRange.endMs;
+  });
+}
+
+function applyZoom(startMs, endMs) {
+  if (endMs - startMs < 1000) return; // zu kleiner Bereich, ignorieren (z.B. reiner Klick)
+  zoomRange = { startMs, endMs };
+  rerenderCharts();
+  updateGraphInfoText();
+}
+
+function resetZoom() {
+  zoomRange = null;
+  rerenderCharts();
+  updateGraphInfoText();
+}
+
+function rerenderCharts() {
+  const pts = pointsInZoom(lastGraphPoints);
+  renderChart(graphTempSvg, pts, "temperature_c", "#2563eb");
+  renderChart(graphHumSvg, pts, "humidity_pct", "#059669");
+  graphZoomResetBtn.disabled = !zoomRange;
+}
+
+function updateGraphInfoText() {
+  const total = lastGraphPoints.length;
+  const shown = pointsInZoom(lastGraphPoints).length;
+  const resolutionNote = lastResolutionSeconds ? ` (${lastResolutionSeconds}s-Buckets, gemittelt)` : " (Rohdaten)";
+  graphInfoEl.textContent = `${total} Punkte${resolutionNote}` + (zoomRange ? `, ${shown} im Zoom-Bereich sichtbar` : "");
+}
+
+graphZoomResetBtn.addEventListener("click", resetZoom);
 
 function formatChartTime(isoUtc, spanSeconds) {
   const withZone = isoUtc.endsWith("Z") || isoUtc.includes("+") ? isoUtc : isoUtc + "Z";
@@ -638,7 +737,7 @@ function renderChart(svg, points, valueKey, color) {
 
   if (!points.length) {
     svg.appendChild(svgEl("text", { x: w / 2, y: h / 2, "text-anchor": "middle", class: "axis-label" })).textContent =
-      "(keine Daten)";
+      "(keine Daten im gewählten Zeitraum)";
     return;
   }
 
@@ -649,28 +748,32 @@ function renderChart(svg, points, valueKey, color) {
     minV -= 1;
     maxV += 1;
   }
-  const vPad = (maxV - minV) * 0.08;
+  const vPad = (maxV - minV) * 0.1;
   minV -= vPad;
   maxV += vPad;
 
-  const times = points.map((p) => {
-    const iso = p.ts.endsWith("Z") || p.ts.includes("+") ? p.ts : p.ts + "Z";
-    return new Date(iso).getTime();
-  });
+  const times = points.map(pointTimeMs);
   const minT = times[0];
   const maxT = times[times.length - 1];
   const spanT = Math.max(1, maxT - minT);
   const spanSeconds = spanT / 1000;
 
-  const xScale = (t) => left + ((t - minT) / spanT) * (w - left - right);
-  const yScale = (v) => top + (1 - (v - minV) / (maxV - minV)) * (h - top - bottom);
+  const plotLeft = left, plotRight = w - right, plotTop = top, plotBottom = h - bottom;
+  const xScale = (t) => plotLeft + ((t - minT) / spanT) * (plotRight - plotLeft);
+  const yScale = (v) => plotTop + (1 - (v - minV) / (maxV - minV)) * (plotBottom - plotTop);
+
+  // Plot-Hintergrund + abgerundeter Rahmen fuer den Datenbereich
+  svg.appendChild(svgEl("rect", {
+    x: plotLeft, y: plotTop, width: plotRight - plotLeft, height: plotBottom - plotTop,
+    class: "chart-plot-bg", rx: 4,
+  }));
 
   const gridCount = 4;
   for (let i = 0; i <= gridCount; i++) {
     const v = minV + ((maxV - minV) * i) / gridCount;
     const y = yScale(v);
-    svg.appendChild(svgEl("line", { x1: left, x2: w - right, y1: y, y2: y, class: "grid-line" }));
-    svg.appendChild(svgEl("text", { x: left - 4, y: y + 3, "text-anchor": "end", class: "axis-label" })).textContent =
+    svg.appendChild(svgEl("line", { x1: plotLeft, x2: plotRight, y1: y, y2: y, class: "grid-line" }));
+    svg.appendChild(svgEl("text", { x: plotLeft - 6, y: y + 3, "text-anchor": "end", class: "axis-label" })).textContent =
       v.toFixed(1);
   }
 
@@ -678,32 +781,49 @@ function renderChart(svg, points, valueKey, color) {
     if (idx < 0 || idx >= points.length) return;
     const x = xScale(times[idx]);
     const anchor = idx === 0 ? "start" : idx === points.length - 1 ? "end" : "middle";
-    svg.appendChild(svgEl("text", { x, y: h - 6, "text-anchor": anchor, class: "axis-label" })).textContent =
+    svg.appendChild(svgEl("text", { x, y: h - 8, "text-anchor": anchor, class: "axis-label" })).textContent =
       formatChartTime(points[idx].ts, spanSeconds);
   });
 
-  let d = "";
+  let linePath = "";
   points.forEach((p, i) => {
     const x = xScale(times[i]);
     const y = yScale(p[valueKey]);
-    d += (i === 0 ? "M" : "L") + x.toFixed(1) + "," + y.toFixed(1) + " ";
+    linePath += (i === 0 ? "M" : "L") + x.toFixed(1) + "," + y.toFixed(1) + " ";
   });
-  svg.appendChild(svgEl("path", { d: d.trim(), class: "series-line", stroke: color }));
+
+  // Gradient-Flaeche unter der Linie (rein optisch, macht den Verlauf besser lesbar)
+  const gradientId = `chart-grad-${++gradientIdCounter}`;
+  const defs = svg.appendChild(svgEl("defs", {}));
+  const gradient = defs.appendChild(svgEl("linearGradient", { id: gradientId, x1: 0, y1: 0, x2: 0, y2: 1 }));
+  gradient.appendChild(svgEl("stop", { offset: "0%", "stop-color": color, "stop-opacity": 0.28 }));
+  gradient.appendChild(svgEl("stop", { offset: "100%", "stop-color": color, "stop-opacity": 0.02 }));
+  const areaPath = `${linePath}L${xScale(times[times.length - 1]).toFixed(1)},${plotBottom} L${xScale(times[0]).toFixed(1)},${plotBottom} Z`;
+  svg.appendChild(svgEl("path", { d: areaPath, fill: `url(#${gradientId})`, stroke: "none" }));
+
+  svg.appendChild(svgEl("path", { d: linePath.trim(), class: "series-line", stroke: color }));
 
   const hoverLine = svg.appendChild(
-    svgEl("line", { class: "hover-line", y1: top, y2: h - bottom, visibility: "hidden" })
+    svgEl("line", { class: "hover-line", y1: plotTop, y2: plotBottom, visibility: "hidden" })
   );
-  const hoverDot = svg.appendChild(svgEl("circle", { r: 4, class: "hover-dot", fill: color, visibility: "hidden" }));
-  const hoverBg = svg.appendChild(svgEl("rect", { class: "hover-text-bg", visibility: "hidden" }));
+  const hoverDot = svg.appendChild(svgEl("circle", { r: 4.5, class: "hover-dot", fill: color, visibility: "hidden" }));
+  const hoverBg = svg.appendChild(svgEl("rect", { class: "hover-text-bg", rx: 3, visibility: "hidden" }));
   const hoverText = svg.appendChild(svgEl("text", { class: "hover-text", visibility: "hidden" }));
 
-  const overlay = svg.appendChild(
-    svgEl("rect", { x: left, y: top, width: w - left - right, height: h - top - bottom, fill: "transparent" })
+  const selectionRect = svg.appendChild(
+    svgEl("rect", { class: "chart-selection", y: plotTop, height: plotBottom - plotTop, visibility: "hidden" })
   );
 
-  function showHover(clientX) {
+  const overlay = svg.appendChild(
+    svgEl("rect", { x: plotLeft, y: plotTop, width: plotRight - plotLeft, height: plotBottom - plotTop, fill: "transparent", cursor: "crosshair" })
+  );
+
+  function clientXToSvgX(clientX) {
     const rect = svg.getBoundingClientRect();
-    const svgX = ((clientX - rect.left) / rect.width) * w;
+    return Math.min(plotRight, Math.max(plotLeft, ((clientX - rect.left) / rect.width) * w));
+  }
+
+  function nearestIndexForSvgX(svgX) {
     let nearest = 0;
     let nearestDist = Infinity;
     for (let i = 0; i < points.length; i++) {
@@ -713,6 +833,12 @@ function renderChart(svg, points, valueKey, color) {
         nearest = i;
       }
     }
+    return nearest;
+  }
+
+  function showHover(clientX) {
+    const svgX = clientXToSvgX(clientX);
+    const nearest = nearestIndexForSvgX(svgX);
     const p = points[nearest];
     const x = xScale(times[nearest]);
     const y = yScale(p[valueKey]);
@@ -726,18 +852,18 @@ function renderChart(svg, points, valueKey, color) {
 
     const label = `${formatChartTime(p.ts, spanSeconds)}  ${p[valueKey].toFixed(1)}`;
     hoverText.textContent = label;
-    const textWidth = label.length * 6 + 8;
-    let textX = x + 8;
-    if (textX + textWidth > w - right) textX = x - textWidth - 8;
-    let textY = y - 10;
-    if (textY < top + 12) textY = y + 20;
-    hoverText.setAttribute("x", textX + 4);
+    const textWidth = label.length * 6 + 10;
+    let textX = x + 10;
+    if (textX + textWidth > plotRight) textX = x - textWidth - 10;
+    let textY = y - 12;
+    if (textY < plotTop + 14) textY = y + 22;
+    hoverText.setAttribute("x", textX + 5);
     hoverText.setAttribute("y", textY);
     hoverText.setAttribute("visibility", "visible");
     hoverBg.setAttribute("x", textX);
-    hoverBg.setAttribute("y", textY - 11);
+    hoverBg.setAttribute("y", textY - 12);
     hoverBg.setAttribute("width", textWidth);
-    hoverBg.setAttribute("height", 15);
+    hoverBg.setAttribute("height", 17);
     hoverBg.setAttribute("visibility", "visible");
   }
 
@@ -748,12 +874,62 @@ function renderChart(svg, points, valueKey, color) {
     hoverBg.setAttribute("visibility", "hidden");
   }
 
-  overlay.addEventListener("mousemove", (e) => showHover(e.clientX));
-  overlay.addEventListener("mouseleave", hideHover);
+  // -- Ziehen zum Zoomen: Mousedown startet einen Drag (siehe der EINMALIGE
+  // globale mousemove/mouseup-Handler weiter unten, der chartDragState
+  // referenziert - bewusst nicht hier pro Render neu an window gebunden,
+  // das wuerde bei jedem der alle 15s wiederkehrenden Chart-Redraws neue
+  // Listener anhaeufen (Leak). Doppelklick setzt den Zoom zurueck.
+  overlay.addEventListener("mousedown", (e) => {
+    const svgX = clientXToSvgX(e.clientX);
+    chartDragState = { svg, startSvgX: svgX, plotLeft, plotRight, minT, spanT, selectionRect };
+    selectionRect.setAttribute("x", svgX);
+    selectionRect.setAttribute("width", 0);
+    selectionRect.setAttribute("visibility", "visible");
+    hideHover();
+  });
+  overlay.addEventListener("mousemove", (e) => {
+    if (!chartDragState) showHover(e.clientX);
+  });
+  overlay.addEventListener("mouseleave", () => {
+    if (!chartDragState) hideHover();
+  });
+  overlay.addEventListener("dblclick", () => resetZoom());
   overlay.addEventListener("touchmove", (e) => {
     if (e.touches[0]) showHover(e.touches[0].clientX);
   });
 }
+
+// Ein EINZIGES globales Drag-Zoom-Handlerpaar fuer beide Graphen (statt pro
+// renderChart()-Aufruf neu an window gebunden - siehe Kommentar oben).
+let chartDragState = null;
+
+function chartDragSvgX(state, clientX) {
+  const rect = state.svg.getBoundingClientRect();
+  return Math.min(state.plotRight, Math.max(state.plotLeft, ((clientX - rect.left) / rect.width) * CHART_WIDTH));
+}
+
+window.addEventListener("mousemove", (e) => {
+  if (!chartDragState) return;
+  const svgX = chartDragSvgX(chartDragState, e.clientX);
+  const x1 = Math.min(chartDragState.startSvgX, svgX);
+  const x2 = Math.max(chartDragState.startSvgX, svgX);
+  chartDragState.selectionRect.setAttribute("x", x1);
+  chartDragState.selectionRect.setAttribute("width", Math.max(0, x2 - x1));
+});
+
+window.addEventListener("mouseup", (e) => {
+  if (!chartDragState) return;
+  const state = chartDragState;
+  chartDragState = null;
+  state.selectionRect.setAttribute("visibility", "hidden");
+  const svgX = chartDragSvgX(state, e.clientX);
+  const x1 = Math.min(state.startSvgX, svgX);
+  const x2 = Math.max(state.startSvgX, svgX);
+  if (x2 - x1 < 4) return; // reiner Klick, kein Drag
+  const startMs = state.minT + ((x1 - state.plotLeft) / (state.plotRight - state.plotLeft)) * state.spanT;
+  const endMs = state.minT + ((x2 - state.plotLeft) / (state.plotRight - state.plotLeft)) * state.spanT;
+  applyZoom(startMs, endMs);
+});
 
 async function refreshGraph() {
   if (!selectedHistoryMac) return;
@@ -763,17 +939,23 @@ async function refreshGraph() {
     const res = await fetchJSON(
       `/api/devices/${encodeURIComponent(selectedHistoryMac)}/series?resolution=${resolution}&limit=${limit}`
     );
-    graphInfoEl.textContent =
-      `${res.points.length} Punkte` + (res.resolution_seconds ? ` (${res.resolution_seconds}s-Buckets, gemittelt)` : " (Rohdaten)");
-    renderChart(graphTempSvg, res.points, "temperature_c", "#2563eb");
-    renderChart(graphHumSvg, res.points, "humidity_pct", "#059669");
+    lastGraphPoints = res.points;
+    lastResolutionSeconds = res.resolution_seconds || 0;
+    rerenderCharts();
+    updateGraphInfoText();
   } catch (e) {
     graphInfoEl.textContent = "Fehler: " + e.message;
   }
 }
 
-graphResolutionSelect.addEventListener("change", refreshGraph);
-graphLimitInput.addEventListener("change", refreshGraph);
+graphResolutionSelect.addEventListener("change", () => {
+  zoomRange = null;
+  refreshGraph();
+});
+graphLimitInput.addEventListener("change", () => {
+  zoomRange = null;
+  refreshGraph();
+});
 
 // -- Status-Polling -------------------------------------------------------------
 
@@ -802,7 +984,6 @@ refreshFirebaseStatus();
 setInterval(refreshAll, 2000);
 setInterval(refreshDebug, 5000);
 setInterval(refreshLog, 4000);
-setInterval(refreshHistory, 15000);
 setInterval(refreshGraph, 15000);
 setInterval(refreshFirebaseStatus, 10000);
 

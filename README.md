@@ -14,6 +14,15 @@ gefundene UND jedes gekoppelte Gerät, die volle effektive Konfiguration,
 ein Debug-Status (Threads/Tasks/Verbindungen) und ein live nachladendes
 Logfile — alles direkt im Browser, nichts muss man sich zusammensuchen.
 
+Oben im Dashboard gibt es Reiter (aktuell „Sensoren“ — die komplette
+TP357S-Anbindung — und „Hue“, ein Platzhalter für ein späteres Feature).
+Jeder Themenblock („Konfiguration“, „Debug“, „Log“, „BLE-Scan“, „Geräte“,
+„Firebase-Upload“, „Verlauf“) ist einzeln einklappbar (Klick auf die
+Kopfzeile). Welche Bereiche eingeklappt sind und welcher Reiter zuletzt
+aktiv war, wird **serverseitig** in `data/ui_state.json` gespeichert
+(`GET`/`POST /api/ui-state`) — bleibt also auch nach einem Neustart des
+Servers erhalten, nicht nur im selben Browser.
+
 ## Ordnerstruktur
 
 ```
@@ -31,8 +40,9 @@ TP357S/
     storage.py                # SQLite-Speicherung (Live-Werte + Historie, je Sensor)
     state.py                   # geteilter Programmstatus (alle Sensoren, Scan, Rohdaten-Logs)
     logging_setup.py            # Logdatei + globale Crash-Hooks (Haupt-/Hintergrund-Threads, asyncio)
-    server.py                     # lokaler Webserver (Flask) + JSON-API
-    static/                         # Dashboard (HTML/CSS/JS, bewusst schmucklos)
+    ui_state.py                   # persistiert Tab/Panel-Zustand des Dashboards (data/ui_state.json)
+    server.py                       # lokaler Webserver (Flask) + JSON-API
+    static/                           # Dashboard (HTML/CSS/JS, bewusst schmucklos)
   data/
     tp357s.db                        # SQLite-Datenbank (wird automatisch angelegt)
     devices.json                       # gekoppelte Sensoren (wird automatisch angelegt)
@@ -174,7 +184,11 @@ Nähe kurz ausschalten/aus der Reichweite bringen und erneut scannen.
   `app/storage.py::aggregate_points` gebildet, nicht im Browser — bleibt
   auch bei vielen Punkten schnell). Hover zeigt Zeitpunkt + Wert des
   nächstgelegenen Punkts inkl. Fadenkreuz. „Punkte max.“ begrenzt, wie viele
-  Rohpunkte vor der Aggregation geladen werden.
+  Rohpunkte vor der Aggregation geladen werden. Horizontal ziehen zoomt in
+  einen Zeitbereich hinein (wirkt auf beide Charts gleichzeitig), Doppelklick
+  oder „Zoom zurücksetzen“ stellt die volle Ansicht wieder her. Die separate
+  Rohdaten-Tabelle unterhalb der Graphen wurde entfernt (redundant zum
+  Graphen + CSV-Export, unnötiger Platzverbrauch).
 - **Auto-Sync (pro Gerät):** Checkbox + Intervall (Minuten) im Rohdaten-Panel
   jedes gekoppelten Geräts. Eingeschaltet ruft die App automatisch im
   eingestellten Takt den Verlauf ab — siehe „Auto-Sync“ unten für die

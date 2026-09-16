@@ -9,115 +9,143 @@
 <body>
 <h1>TP357S Monitor (Dev-Ansicht)</h1>
 
-<section>
-  <h2>Server</h2>
-  <div class="row">
-    <div class="col">
-      <h3>Konfiguration (/api/config)</h3>
-      <pre id="config-dump">lade…</pre>
+<div class="tabs">
+  <button class="tab-btn" data-tab="sensors" type="button">Sensoren</button>
+  <button class="tab-btn" data-tab="hue" type="button">Hue</button>
+</div>
+
+<div class="tab-content" data-tab="sensors">
+
+<div class="panel" data-panel-id="cfg">
+  <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>Konfiguration (/api/config)</h2></div>
+  <div class="panel-body">
+    <pre id="config-dump">lade…</pre>
+  </div>
+</div>
+
+<div class="panel" data-panel-id="debug">
+  <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>Debug (/api/debug)</h2></div>
+  <div class="panel-body">
+    <pre id="debug-dump">lade…</pre>
+  </div>
+</div>
+
+<div class="panel" data-panel-id="log">
+  <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>Log (/api/logs)</h2></div>
+  <div class="panel-body">
+    <div class="row">
+      <label>Zeilen: <input id="log-lines" type="number" value="300" min="20" max="5000" /></label>
+      <label><input id="log-autoscroll" type="checkbox" checked /> Auto-Scroll</label>
     </div>
-    <div class="col">
-      <h3>Debug (/api/debug)</h3>
-      <pre id="debug-dump">lade…</pre>
+    <pre id="log-view" class="log-box">lade…</pre>
+  </div>
+</div>
+
+<div class="panel" data-panel-id="scan">
+  <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>BLE-Scan</h2></div>
+  <div class="panel-body">
+    <div class="row">
+      <label>Dauer (Sek.): <input id="scan-duration" type="number" value="15" min="2" max="60" /></label>
+      <button id="scan-btn">Scan starten</button>
+      <span id="scan-status"></span>
+    </div>
+    <div class="row">
+      <label>MAC direkt: <input id="manual-mac" type="text" placeholder="AA:BB:CC:DD:EE:FF" size="18" /></label>
+      <label>Name: <input id="manual-name" type="text" placeholder="TP357S Keller" size="16" /></label>
+      <button id="manual-add-btn">Hinzufügen</button>
+      <button id="manual-probe-btn">Live-Test</button>
+      <span class="small">(falls der Scan das Gerät nicht findet, MAC hier direkt eintragen)</span>
+    </div>
+    <table id="scan-table">
+      <thead>
+        <tr>
+          <th>Name</th><th>MAC</th><th>RSSI</th><th>TX-Power</th>
+          <th>Service-UUIDs</th><th>Manufacturer-Data</th><th>Service-Data</th>
+          <th>Details (raw)</th><th>Aktionen</th>
+        </tr>
+      </thead>
+      <tbody id="scan-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="panel" data-panel-id="devices">
+  <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>Geräte (gekoppelt + Live-Test)</h2></div>
+  <div class="panel-body">
+    <table id="device-table">
+      <thead>
+        <tr>
+          <th>Name</th><th>MAC</th><th>Typ</th><th>Status</th><th>Seit</th>
+          <th>Live-Wert</th><th>Fehler</th><th>Pakete</th><th>Aktionen</th>
+        </tr>
+      </thead>
+      <tbody id="device-body"></tbody>
+    </table>
+    <div id="device-logs"></div>
+  </div>
+</div>
+
+<div class="panel" data-panel-id="firebase">
+  <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>Firebase-Upload</h2></div>
+  <div class="panel-body">
+    <div class="row">
+      <button id="firebase-upload-now-btn">Jetzt hochladen</button>
+      <span id="firebase-status" class="small"></span>
+    </div>
+    <pre id="firebase-detail" class="log-box small"></pre>
+  </div>
+</div>
+
+<div class="panel" data-panel-id="history">
+  <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>Verlauf</h2></div>
+  <div class="panel-body">
+    <div class="row">
+      <label>Sensor: <select id="history-device"></select></label>
+      <label>Anzahl Datensätze:
+        <input id="history-count" type="number" value="500" min="1" max="65535"
+               title="NL/NH im Datenanfrage-Kommando sind 16-bit, also max. 65535 (Protokoll-Limit, nicht willkürlich gesetzt)" />
+      </label>
+      <button id="fetch-history-btn">Verlauf vom Sensor abrufen</button>
+      <a id="export-link" href="/api/export.csv">CSV-Export</a>
+    </div>
+    <pre id="history-info"></pre>
+
+    <div class="row">
+      <label>Auflösung:
+        <select id="graph-resolution">
+          <option value="raw">Rohdaten</option>
+          <option value="5min">5-Minuten-Mittel</option>
+          <option value="15min">15-Minuten-Mittel</option>
+          <option value="hour">Stunden-Mittel</option>
+          <option value="day">Tages-Mittel</option>
+        </select>
+      </label>
+      <label>Punkte max.: <input id="graph-limit" type="number" value="2000" min="10" max="200000" /></label>
+      <button id="graph-zoom-reset-btn" disabled>Zoom zurücksetzen</button>
+      <span id="graph-info" class="small"></span>
+    </div>
+    <p class="small">Tipp: im Graphen horizontal ziehen zum Hineinzoomen, Doppelklick zum Zurücksetzen.</p>
+    <div class="graph-box">
+      <h3>Temperatur °C</h3>
+      <svg id="graph-temp" class="chart" viewBox="0 0 900 260" preserveAspectRatio="none"></svg>
+    </div>
+    <div class="graph-box">
+      <h3>Luftfeuchte %</h3>
+      <svg id="graph-hum" class="chart" viewBox="0 0 900 260" preserveAspectRatio="none"></svg>
     </div>
   </div>
-  <h3>
-    Log (/api/logs)
-    <label>Zeilen: <input id="log-lines" type="number" value="300" min="20" max="5000" /></label>
-    <label><input id="log-autoscroll" type="checkbox" checked /> Auto-Scroll</label>
-  </h3>
-  <pre id="log-view" class="log-box">lade…</pre>
-</section>
+</div>
 
-<section>
-  <h2>BLE-Scan</h2>
-  <div class="row">
-    <label>Dauer (Sek.): <input id="scan-duration" type="number" value="15" min="2" max="60" /></label>
-    <button id="scan-btn">Scan starten</button>
-    <span id="scan-status"></span>
-  </div>
-  <div class="row">
-    <label>MAC direkt: <input id="manual-mac" type="text" placeholder="AA:BB:CC:DD:EE:FF" size="18" /></label>
-    <label>Name: <input id="manual-name" type="text" placeholder="TP357S Keller" size="16" /></label>
-    <button id="manual-add-btn">Hinzufügen</button>
-    <button id="manual-probe-btn">Live-Test</button>
-    <span class="small">(falls der Scan das Gerät nicht findet, MAC hier direkt eintragen)</span>
-  </div>
-  <table id="scan-table">
-    <thead>
-      <tr>
-        <th>Name</th><th>MAC</th><th>RSSI</th><th>TX-Power</th>
-        <th>Service-UUIDs</th><th>Manufacturer-Data</th><th>Service-Data</th>
-        <th>Details (raw)</th><th>Aktionen</th>
-      </tr>
-    </thead>
-    <tbody id="scan-body"></tbody>
-  </table>
-</section>
+</div>
 
-<section>
-  <h2>Geräte (gekoppelt + Live-Test)</h2>
-  <table id="device-table">
-    <thead>
-      <tr>
-        <th>Name</th><th>MAC</th><th>Typ</th><th>Status</th><th>Seit</th>
-        <th>Live-Wert</th><th>Fehler</th><th>Pakete</th><th>Aktionen</th>
-      </tr>
-    </thead>
-    <tbody id="device-body"></tbody>
-  </table>
-  <div id="device-logs"></div>
-</section>
-
-<section>
-  <h2>Firebase-Upload</h2>
-  <div class="row">
-    <button id="firebase-upload-now-btn">Jetzt hochladen</button>
-    <span id="firebase-status" class="small"></span>
+<div class="tab-content" data-tab="hue">
+  <div class="panel" data-panel-id="hue-placeholder">
+    <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>Hue</h2></div>
+    <div class="panel-body">
+      <p>Kommt im nächsten Schritt.</p>
+    </div>
   </div>
-  <pre id="firebase-detail" class="log-box small"></pre>
-</section>
-
-<section>
-  <h2>Verlauf</h2>
-  <div class="row">
-    <label>Sensor: <select id="history-device"></select></label>
-    <label>Anzahl Datensätze:
-      <input id="history-count" type="number" value="500" min="1" max="65535"
-             title="NL/NH im Datenanfrage-Kommando sind 16-bit, also max. 65535 (Protokoll-Limit, nicht willkürlich gesetzt)" />
-    </label>
-    <button id="fetch-history-btn">Verlauf vom Sensor abrufen</button>
-    <a id="export-link" href="/api/export.csv">CSV-Export</a>
-  </div>
-  <pre id="history-info"></pre>
-
-  <div class="row">
-    <label>Auflösung:
-      <select id="graph-resolution">
-        <option value="raw">Rohdaten</option>
-        <option value="5min">5-Minuten-Mittel</option>
-        <option value="15min">15-Minuten-Mittel</option>
-        <option value="hour">Stunden-Mittel</option>
-        <option value="day">Tages-Mittel</option>
-      </select>
-    </label>
-    <label>Punkte max.: <input id="graph-limit" type="number" value="2000" min="10" max="200000" /></label>
-    <span id="graph-info" class="small"></span>
-  </div>
-  <div class="graph-box">
-    <h3>Temperatur °C</h3>
-    <svg id="graph-temp" class="chart" viewBox="0 0 900 220" preserveAspectRatio="none"></svg>
-  </div>
-  <div class="graph-box">
-    <h3>Luftfeuchte %</h3>
-    <svg id="graph-hum" class="chart" viewBox="0 0 900 220" preserveAspectRatio="none"></svg>
-  </div>
-
-  <table>
-    <thead><tr><th>Zeitstempel (geschätzt)</th><th>Temperatur °C</th><th>Luftfeuchte %</th></tr></thead>
-    <tbody id="history-body"></tbody>
-  </table>
-</section>
+</div>
 
 <script src="/app.js"></script>
 </body>
