@@ -12,6 +12,7 @@
 <div class="tabs">
   <button class="tab-btn" data-tab="sensors" type="button">Sensoren</button>
   <button class="tab-btn" data-tab="hue" type="button">Hue</button>
+  <button class="tab-btn" data-tab="floorplan" type="button">Gebäudeplan</button>
 </div>
 
 <div class="tab-content" data-tab="sensors">
@@ -189,6 +190,89 @@
       warum etwas fehlschlägt.
     </p>
     <pre id="hue-live-log" class="log-box">(noch keine Ereignisse)</pre>
+  </div>
+</div>
+
+</div>
+
+<div class="tab-content" data-tab="floorplan">
+
+<div class="panel" data-panel-id="floorplan-upload">
+  <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>Grundriss-Bild</h2></div>
+  <div class="panel-body">
+    <div class="row">
+      <input id="floorplan-file-input" type="file" accept="image/*" />
+      <button id="floorplan-upload-btn">Hochladen</button>
+      <button id="floorplan-remove-btn">Bild entfernen</button>
+      <span id="floorplan-upload-status" class="small"></span>
+    </div>
+  </div>
+</div>
+
+<div class="panel" data-panel-id="floorplan-motion">
+  <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>Bewegungsmelder — Live</h2></div>
+  <div class="panel-body">
+    <div id="motion-live-banner" class="motion-banner motion-idle">Keine Bewegung erkannt</div>
+    <p id="motion-live-hint" class="small" hidden>
+      Live-Stream läuft nicht — <button id="motion-start-live-btn" type="button">jetzt starten</button>,
+      damit Bewegungen in Echtzeit ankommen.
+    </p>
+    <table id="motion-log-table">
+      <thead><tr><th>Zeit</th><th>Sensor</th><th>Status</th></tr></thead>
+      <tbody id="motion-log-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="panel" data-panel-id="floorplan-canvas">
+  <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>Grundriss</h2></div>
+  <div class="panel-body">
+    <p class="small">
+      Icons aus „Nicht platziert" per Drag&amp;Drop auf den Grundriss ziehen (Position wird
+      gespeichert). Klick auf ein platziertes Lampen-Icon öffnet die Steuerung.
+    </p>
+    <div id="floorplan-empty-hint" class="small">Noch kein Grundriss-Bild hochgeladen (siehe oben).</div>
+    <div id="floorplan-layout" class="floorplan-layout" hidden>
+      <div id="floorplan-canvas-wrap" class="floorplan-canvas-wrap">
+        <img id="floorplan-image" class="floorplan-image" alt="Grundriss" />
+        <div id="floorplan-overlay" class="floorplan-overlay"></div>
+      </div>
+      <div class="floorplan-sidebar">
+        <h3>Nicht platziert</h3>
+        <div id="floorplan-unplaced-list"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="panel" data-panel-id="floorplan-control">
+  <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>Lampen-Steuerung</h2></div>
+  <div class="panel-body">
+    <div id="light-control-empty" class="small">Kein Icon ausgewählt — auf eine Lampe im Grundriss klicken.</div>
+    <div id="light-control-panel" hidden>
+      <h3 id="light-control-name"></h3>
+      <div class="row">
+        <label><input id="light-control-on" type="checkbox" /> An</label>
+      </div>
+      <div class="row" id="light-control-brightness-row">
+        <label>Helligkeit: <input id="light-control-brightness" type="range" min="0" max="100" step="1" /></label>
+        <span id="light-control-brightness-value" class="small"></span>
+      </div>
+      <div class="row" id="light-control-color-row">
+        <label>Farbe: <input id="light-control-color" type="color" /></label>
+      </div>
+      <div class="row" id="light-control-mirek-row">
+        <label>Farbtemperatur (warm ↔ kalt): <input id="light-control-mirek" type="range" /></label>
+      </div>
+      <pre id="light-control-raw" class="small"></pre>
+    </div>
+  </div>
+</div>
+
+<div class="panel" data-panel-id="floorplan-zones">
+  <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>Räume / Zonen</h2></div>
+  <div class="panel-body">
+    <div id="zone-list"></div>
   </div>
 </div>
 

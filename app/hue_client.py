@@ -264,6 +264,200 @@ class HueManager:
         with self._lock:
             return self.last_pull_data
 
+    def get_fresh_pull(self, max_age_seconds: float = 15.0) -> dict:
+        """Wie pull_now(), aber verzichtet auf einen neuen Bridge-Request,
+        wenn der letzte Pull noch juenger als max_age_seconds ist - fuer
+        Endpunkte (z.B. die Gebaeudeplan-Topologie), die bei jedem Laden der
+        Seite frische Daten brauchen, aber nicht bei jedem 2s-Poll erneut
+        die Bridge belasten sollen."""
+        with self._lock:
+            data = self.last_pull_data
+            last_at = self.last_pull_at
+        if data is not None and last_at is not None:
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(last_at)).total_seconds()
+            if age < max_age_seconds:
+                return data
+        return self.pull_now()
+
+    # -- Lampen/Gruppen schreiben (PUT, CLIP v2) ----------------------------------
+
+    def _put_resource(self, rtype: str, resource_id: str, body: dict) -> dict:
+        if not self.is_paired():
+            raise RuntimeError("Nicht mit einer Hue-Bridge gekoppelt.")
+        url = f"https://{self.bridge_ip}/clip/v2/resource/{rtype}/{resource_id}"
+        headers = {"hue-application-key": self.application_key}
+        self._append_event({"kind": "put-attempt", "note": f"PUT {url} {json.dumps(body, ensure_ascii=False)}"})
+        try:
+            resp = requests.put(url, headers=headers, json=body, timeout=HTTP_TIMEOUT_SECONDS, verify=False)
+            resp.raise_for_status()
+            result = resp.json()
+        except Exception as exc:  # noqa: BLE001
+            message = f"{type(exc).__name__}: {exc}"
+            logger.exception("Hue-PUT fehlgeschlagen (%s/%s)", rtype, resource_id)
+            self._append_event({"kind": "put-error", "note": message})
+            raise
+        if result.get("errors"):
+            message = "; ".join(e.get("description", str(e)) for e in result["errors"])
+            logger.warning("Hue-PUT von der Bridge abgelehnt (%s/%s): %s", rtype, resource_id, message)
+            self._append_event({"kind": "put-error", "note": message})
+            raise RuntimeError(message)
+        self._append_event({"kind": "put-ok", "note": f"{rtype}/{resource_id}: {json.dumps(body, ensure_ascii=False)}"})
+        return result
+
+    @staticmethod
+    def _build_state_body(
+        on: Optional[bool] = None,
+        brightness: Optional[float] = None,
+        xy: Optional[List[float]] = None,
+        mirek: Optional[int] = None,
+    ) -> dict:
+        body: dict = {}
+        if on is not None:
+            body["on"] = {"on": bool(on)}
+        if brightness is not None:
+            body["dimming"] = {"brightness": max(0.0, min(100.0, float(brightness)))}
+        if xy is not None:
+            body["color"] = {"xy": {"x": float(xy[0]), "y": float(xy[1])}}
+        if mirek is not None:
+            body["color_temperature"] = {"mirek": int(mirek)}
+        return body
+
+    def set_light(
+        self, light_id: str, *, on: Optional[bool] = None, brightness: Optional[float] = None,
+        xy: Optional[List[float]] = None, mirek: Optional[int] = None,
+    ) -> dict:
+        """Setzt einzelne Lampen-Eigenschaften per PUT
+        /clip/v2/resource/light/{id}. Nur uebergebene (nicht-None) Felder
+        werden geaendert, alle anderen bleiben unberuehrt (Standardverhalten
+        der Hue-API bei einem PUT mit Teil-Body)."""
+        body = self._build_state_body(on=on, brightness=brightness, xy=xy, mirek=mirek)
+        if not body:
+            raise ValueError("Kein Feld zum Setzen angegeben.")
+        return self._put_resource("light", light_id, body)
+
+    def set_grouped_light(
+        self, grouped_light_id: str, *, on: Optional[bool] = None, brightness: Optional[float] = None,
+        xy: Optional[List[float]] = None, mirek: Optional[int] = None,
+    ) -> dict:
+        """Wie set_light(), aber fuer eine ganze Zone/einen ganzen Raum ueber
+        dessen grouped_light-Ressource - wirkt auf alle Lampen der
+        Gruppe gleichzeitig."""
+        body = self._build_state_body(on=on, brightness=brightness, xy=xy, mirek=mirek)
+        if not body:
+            raise ValueError("Kein Feld zum Setzen angegeben.")
+        return self._put_resource("grouped_light", grouped_light_id, body)
+
+    # -- Topologie fuer den Gebaeudeplan (Lampen/Raeume/Zonen/Sensoren) -----------
+
+    def resolve_topology(self) -> dict:
+        """Baut aus dem rohen /clip/v2/resource-Pull eine fuer den
+        Gebaeudeplan direkt nutzbare, verknuepfte Struktur: pro Lampe Name +
+        Raum/Zone + Zustand + Faehigkeiten (dimmbar/farbig/Farbtemperatur),
+        pro Raum/Zone die zugehoerige grouped_light-Ressource + Mitglieder,
+        pro Bewegungs-/Helligkeits-/Temperatur-Sensor Name + aktueller Wert.
+
+        Noetig, weil die rohe CLIP-v2-Antwort ein flaches Array typisierter
+        Ressourcen ist, die nur ueber id-Referenzen verknuepft sind (ein
+        'light' traegt selbst keinen Raumnamen, nur eine 'owner'-Referenz
+        auf sein 'device'; welcher Raum/welche Zone dieses Device enthaelt,
+        steht wiederum nur in den 'children' der room/zone-Ressourcen) -
+        das im Frontend nachzubauen waere doppelte, fehleranfaellige Logik."""
+        data = self.get_fresh_pull()
+        by_id: Dict[str, dict] = {item["id"]: item for item in data.get("data", []) if "id" in item}
+
+        def device_name(device_id: Optional[str]) -> str:
+            device = by_id.get(device_id) if device_id else None
+            if device and device.get("metadata", {}).get("name"):
+                return device["metadata"]["name"]
+            return "?"
+
+        # Raum/Zone je Device-ID ermitteln (device -> room/zone, ueber deren children)
+        device_to_group: Dict[str, dict] = {}
+        for item in data.get("data", []):
+            if item.get("type") not in ("room", "zone"):
+                continue
+            for child in item.get("children", []):
+                if child.get("rtype") == "device":
+                    device_to_group[child["rid"]] = item
+
+        lights = []
+        for item in data.get("data", []):
+            if item.get("type") != "light":
+                continue
+            owner_id = item.get("owner", {}).get("rid")
+            group = device_to_group.get(owner_id)
+            name = item.get("metadata", {}).get("name") or device_name(owner_id)
+            mirek_schema = (item.get("color_temperature") or {}).get("mirek_schema") or {}
+            lights.append({
+                "id": item["id"],
+                "name": name,
+                "owner_device_id": owner_id,
+                "room_id": group["id"] if group and group.get("type") == "room" else None,
+                "zone_id": group["id"] if group and group.get("type") == "zone" else None,
+                "group_name": group.get("metadata", {}).get("name") if group else None,
+                "on": (item.get("on") or {}).get("on"),
+                "brightness": (item.get("dimming") or {}).get("brightness"),
+                "xy": (item.get("color") or {}).get("xy"),
+                "mirek": (item.get("color_temperature") or {}).get("mirek"),
+                "capabilities": {
+                    "dimmable": "dimming" in item,
+                    "color": "color" in item,
+                    "color_temperature": "color_temperature" in item,
+                },
+                "mirek_min": mirek_schema.get("mirek_minimum"),
+                "mirek_max": mirek_schema.get("mirek_maximum"),
+            })
+
+        groups = []
+        for item in data.get("data", []):
+            if item.get("type") not in ("room", "zone"):
+                continue
+            grouped_light_id = None
+            for svc in item.get("services", []):
+                if svc.get("rtype") == "grouped_light":
+                    grouped_light_id = svc["rid"]
+                    break
+            grouped_light = by_id.get(grouped_light_id) if grouped_light_id else None
+            member_light_ids = [
+                l["id"] for l in lights
+                if (l["room_id"] == item["id"]) or (l["zone_id"] == item["id"])
+            ]
+            groups.append({
+                "id": item["id"],
+                "type": item["type"],
+                "name": item.get("metadata", {}).get("name") or "?",
+                "grouped_light_id": grouped_light_id,
+                "on": (grouped_light or {}).get("on", {}).get("on"),
+                "brightness": (grouped_light or {}).get("dimming", {}).get("brightness"),
+                "light_ids": member_light_ids,
+            })
+
+        sensors = []
+        for item in data.get("data", []):
+            if item.get("type") not in ("motion", "light_level", "temperature"):
+                continue
+            owner_id = item.get("owner", {}).get("rid")
+            group = device_to_group.get(owner_id)
+            entry = {
+                "id": item["id"],
+                "type": item["type"],
+                "name": device_name(owner_id),
+                "owner_device_id": owner_id,
+                "room_id": group["id"] if group and group.get("type") == "room" else None,
+                "zone_id": group["id"] if group and group.get("type") == "zone" else None,
+                "enabled": item.get("enabled"),
+            }
+            if item["type"] == "motion":
+                entry["motion"] = (item.get("motion") or {}).get("motion")
+                entry["motion_valid"] = (item.get("motion") or {}).get("motion_valid")
+            elif item["type"] == "light_level":
+                entry["light_level"] = (item.get("light") or {}).get("light_level")
+            elif item["type"] == "temperature":
+                entry["temperature"] = (item.get("temperature") or {}).get("temperature")
+            sensors.append(entry)
+
+        return {"lights": lights, "groups": groups, "sensors": sensors, "pulled_at": self.last_pull_at}
+
     # -- Live (Server-Sent Events, /eventstream/clip/v2) --------------------------
 
     def start_live(self) -> None:

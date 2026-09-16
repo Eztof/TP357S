@@ -7,7 +7,7 @@ import logging
 import traceback
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
 from . import protocol
 from .ble_client import BleManager
@@ -15,6 +15,7 @@ from .config import AppConfig
 from .devices import DeviceStore
 from .firebase_sync import FirebaseSync
 from .hue_client import HueManager
+from .hue_layout import HueLayout
 from .logging_setup import tail_log_file
 from .state import AppState
 from .storage import Storage, aggregate_points
@@ -27,7 +28,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 def create_app(
     config: AppConfig, state: AppState, storage: Storage, ble: BleManager, devices: DeviceStore,
-    firebase: FirebaseSync, ui_state: UiState, hue: HueManager,
+    firebase: FirebaseSync, ui_state: UiState, hue: HueManager, hue_layout: HueLayout,
 ) -> Flask:
     app = Flask(__name__, static_folder=None)
 
@@ -344,6 +345,90 @@ def create_app(
     def api_hue_events():
         limit = request.args.get("limit", default=200, type=int)
         return jsonify(hue.get_events(limit=limit))
+
+    # -- Hue: Gebaeudeplan (Grundriss-Bild, Lampen-Positionen, Lesen/Schreiben) ---
+
+    @app.get("/api/hue/topology")
+    def api_hue_topology():
+        return jsonify(hue.resolve_topology())
+
+    @app.post("/api/hue/light/<light_id>/state")
+    def api_hue_set_light(light_id):
+        payload = request.get_json(force=True, silent=True) or {}
+        try:
+            hue.set_light(
+                light_id,
+                on=payload.get("on"),
+                brightness=payload.get("brightness"),
+                xy=payload.get("xy"),
+                mirek=payload.get("mirek"),
+            )
+            return jsonify({"ok": True})
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 502
+
+    @app.post("/api/hue/group/<group_id>/state")
+    def api_hue_set_group(group_id):
+        payload = request.get_json(force=True, silent=True) or {}
+        try:
+            hue.set_grouped_light(
+                group_id,
+                on=payload.get("on"),
+                brightness=payload.get("brightness"),
+                xy=payload.get("xy"),
+                mirek=payload.get("mirek"),
+            )
+            return jsonify({"ok": True})
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 502
+
+    @app.get("/api/hue/floorplan")
+    def api_hue_floorplan_status():
+        return jsonify(hue_layout.snapshot())
+
+    @app.post("/api/hue/floorplan/image")
+    def api_hue_floorplan_upload():
+        file = request.files.get("image")
+        if not file or not file.filename:
+            return jsonify({"ok": False, "error": "Keine Bilddatei angehaengt"}), 400
+        try:
+            hue_layout.set_image(file.filename, file.read())
+            return jsonify({"ok": True, **hue_layout.snapshot()})
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
+    @app.get("/api/hue/floorplan/image")
+    def api_hue_floorplan_image():
+        path = hue_layout.get_image_path()
+        if not path:
+            return jsonify({"ok": False, "error": "Kein Grundriss-Bild vorhanden"}), 404
+        return send_file(path)
+
+    @app.delete("/api/hue/floorplan/image")
+    def api_hue_floorplan_remove():
+        hue_layout.remove_image()
+        return jsonify({"ok": True})
+
+    @app.post("/api/hue/floorplan/position")
+    def api_hue_floorplan_set_position():
+        payload = request.get_json(force=True, silent=True) or {}
+        resource_id = payload.get("resource_id")
+        if not resource_id:
+            return jsonify({"ok": False, "error": "resource_id fehlt"}), 400
+        try:
+            hue_layout.set_position(resource_id, payload.get("x"), payload.get("y"))
+            return jsonify({"ok": True})
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "Ungueltige x/y-Werte"}), 400
+
+    @app.delete("/api/hue/floorplan/position/<resource_id>")
+    def api_hue_floorplan_remove_position(resource_id):
+        hue_layout.remove_position(resource_id)
+        return jsonify({"ok": True})
 
     # -- Export ------------------------------------------------------------------
 

@@ -8,6 +8,7 @@
   "devices_path": "data/devices.json",
   "ui_state_path": "data/ui_state.json",
   "hue_config_path": "hue_config.json",
+  "hue_layout_dir": "data/hue_layout",
   "log_path": "data/app.log",
   "log_level": "DEBUG",
   "log_max_bytes": 5000000,

@@ -9,5 +9,6 @@ data/*.db-shm
 data/devices.json
 data/app.log*
 data/ui_state.json
+data/hue_layout/
 hue_config.json
 firebase-service-account.json

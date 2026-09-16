@@ -22,6 +22,7 @@ class AppConfig:
     devices_path: Path
     ui_state_path: Path
     hue_config_path: Path
+    hue_layout_dir: Path
     log_path: Path
     log_level: str
     log_max_bytes: int
@@ -66,6 +67,10 @@ def load_config() -> AppConfig:
         # ersten Start dort platzieren koennen, genau wie
         # firebase-service-account.json (gleiches Muster, gleicher Ort).
         hue_config_path=BASE_DIR / raw.get("hue_config_path", "hue_config.json"),
+        # Grundriss-Bild + Lampen-Positionen: kein Credential, wird erst
+        # WAEHREND der Laufzeit ueber das Dashboard hochgeladen/gesetzt -
+        # bleibt daher in data/ (anders als hue_config.json oben).
+        hue_layout_dir=BASE_DIR / raw.get("hue_layout_dir", "data/hue_layout"),
         log_path=BASE_DIR / raw.get("log_path", "data/app.log"),
         log_level=raw.get("log_level", "DEBUG"),
         log_max_bytes=int(raw.get("log_max_bytes", 5_000_000)),

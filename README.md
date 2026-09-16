@@ -13,15 +13,18 @@ Advertisement-Felder), ein Live-Rohdaten-Feed (Hex + Dekodierung) für jedes
 gefundene UND jedes gekoppelte Gerät, die volle effektive Konfiguration,
 ein Debug-Status (Threads/Tasks/Verbindungen) und ein live nachladendes
 Logfile — alles direkt im Browser, nichts muss man sich zusammensuchen.
+Jedes Log-/Dump-Fenster hat einen „In Zwischenablage kopieren“-Button
+direkt darüber.
 
-Oben im Dashboard gibt es Reiter (aktuell „Sensoren“ — die komplette
-TP357S-Anbindung — und „Hue“, ein Platzhalter für ein späteres Feature).
-Jeder Themenblock („Konfiguration“, „Debug“, „Log“, „BLE-Scan“, „Geräte“,
-„Firebase-Upload“, „Verlauf“) ist einzeln einklappbar (Klick auf die
-Kopfzeile). Welche Bereiche eingeklappt sind und welcher Reiter zuletzt
-aktiv war, wird **serverseitig** in `data/ui_state.json` gespeichert
-(`GET`/`POST /api/ui-state`) — bleibt also auch nach einem Neustart des
-Servers erhalten, nicht nur im selben Browser.
+Oben im Dashboard gibt es Reiter: „Sensoren“ (die komplette TP357S-
+Anbindung), „Hue“ (rohe Anbindung an die Philips-Hue-Bridge, siehe unten)
+und „Gebäudeplan“ (Lampen auf einem eigenen Grundriss-Bild platzieren und
+steuern, siehe unten). Jeder Themenblock innerhalb eines Reiters ist
+einzeln einklappbar (Klick auf die Kopfzeile). Welche Bereiche eingeklappt
+sind und welcher Reiter zuletzt aktiv war, wird **serverseitig** in
+`data/ui_state.json` gespeichert (`GET`/`POST /api/ui-state`) — bleibt
+also auch nach einem Neustart des Servers erhalten, nicht nur im selben
+Browser.
 
 ## Ordnerstruktur
 
@@ -42,12 +45,14 @@ TP357S/
     logging_setup.py            # Logdatei + globale Crash-Hooks (Haupt-/Hintergrund-Threads, asyncio)
     ui_state.py                   # persistiert Tab/Panel-Zustand des Dashboards (data/ui_state.json)
     hue_client.py                   # Anbindung an die lokale Philips-Hue-Bridge (CLIP v2)
-    server.py                         # lokaler Webserver (Flask) + JSON-API
-    static/                           # Dashboard (HTML/CSS/JS, bewusst schmucklos)
+    hue_layout.py                     # Grundriss-Bild + Lampen-/Sensor-Positionen (data/hue_layout/)
+    server.py                           # lokaler Webserver (Flask) + JSON-API
+    static/                             # Dashboard (HTML/CSS/JS, bewusst schmucklos)
   data/
     tp357s.db                        # SQLite-Datenbank (wird automatisch angelegt)
     devices.json                       # gekoppelte Sensoren (wird automatisch angelegt)
     app.log                              # Logdatei, rotierend (wird automatisch angelegt)
+    hue_layout/                          # Grundriss-Bild + layout.json (wird automatisch angelegt)
 ```
 
 ## Voraussetzungen
@@ -545,6 +550,47 @@ bleibt trotzdem TLS-verschlüsselt, nur die Zertifikatskette wird nicht
 geprüft. Bewusster Kompromiss fürs eigene Heimnetz, analog zur bereits
 beim Firebase-Upload besprochenen Haltung („Sicherheit spielt hier eine
 untergeordnete Rolle“).
+
+## Gebäudeplan (Reiter „Gebäudeplan“, `app/hue_layout.py`)
+
+Lesen **und** Schreiben der Hue-Lampen, verortet auf einem selbst
+hochgeladenen Grundriss-Bild — eigener Reiter, unabhängig vom rohen
+Hue-Datenstrom im Hue-Reiter.
+
+- **Grundriss-Bild:** eigenes Foto/Scan/Screenshot hochladen (PNG/JPG/GIF/
+  WEBP, max. 20 MiB). Liegt in `data/hue_layout/floorplan.<ext>`, Metadaten
+  (Dateiname + Positionen) in `data/hue_layout/layout.json` — beides kein
+  Credential, daher in `data/` statt im Hauptordner (anders als
+  `hue_config.json`).
+- **Platzieren per Drag&Drop:** Lampen und Sensoren (Bewegung, Helligkeit,
+  Temperatur), die noch keine Position haben, erscheinen in der Seitenleiste
+  „Nicht platziert“ und lassen sich auf den Grundriss ziehen (natives
+  HTML5-Drag&Drop, keine eigene Maus-Tracking-Logik nötig). Position wird
+  als Bruchteil (0..1) der Bildgröße gespeichert — bleibt bei jeder
+  Bildschirmgröße korrekt. Das ×-Icon an einem platzierten Icon entfernt es
+  wieder von der Karte (Position, nicht das Gerät selbst).
+- **Lampen-Steuerung:** Klick auf ein platziertes Lampen-Icon öffnet das
+  Steuerpanel — An/Aus, Helligkeit (falls dimmbar), Farbe (falls farbfähig,
+  `<input type=color>` mit Standard-Philips-Formel nach CIE-xy umgerechnet),
+  Farbtemperatur warm↔kalt (falls unterstützt, Mirek-Bereich direkt aus den
+  Lampen-Fähigkeiten der Bridge gelesen). Jede Änderung sendet sofort (bei
+  Reglern debounced, 250 ms) ein `PUT /clip/v2/resource/light/<id>` mit nur
+  den geänderten Feldern.
+- **Räume/Zonen:** eigenes Panel mit einer Zeile je Hue-Raum/-Zone —
+  An/Aus + Helligkeit wirken über `PUT /clip/v2/resource/grouped_light/<id>`
+  auf alle Lampen der Gruppe gleichzeitig.
+- **Bewegungsmelder — live:** großes Banner, das bei einem `motion`-Ereignis
+  aus dem SSE-Live-Stream (siehe Hue-Reiter, `/eventstream/clip/v2`) sofort
+  umschaltet (inkl. Puls-Animation) und wieder zurück, sobald die Bewegung
+  endet — plus eine laufende Tabelle der letzten Bewegungsereignisse mit
+  Zeitstempel. Braucht den laufenden Live-Stream (Hinweis + Direkt-Start-
+  Button erscheinen, falls der noch nicht läuft).
+- **Datenherkunft:** Lampen/Räume/Zonen/Sensoren werden aus dem rohen
+  `/clip/v2/resource`-Pull zu einer direkt nutzbaren Struktur verknüpft
+  (`HueManager.resolve_topology()` in `app/hue_client.py`) — eine Lampe
+  trägt selbst keinen Raumnamen, nur eine Geräte-Referenz; welcher Raum sie
+  enthält, steht wiederum nur in den `children` der Raum-Ressource. Diese
+  Verknüpfung läuft serverseitig, nicht im Browser.
 
 ## Datenschutz / Speicherort
 

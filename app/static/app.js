@@ -149,6 +149,45 @@ initPanels();
 initTabs();
 loadUiState();
 
+// -- Kopier-Button fuer jedes Log-/Dump-Fenster -------------------------------
+
+function attachCopyButton(pre) {
+  if (!pre || pre.dataset.copyAttached) return;
+  pre.dataset.copyAttached = "1";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "copy-btn";
+  btn.textContent = "In Zwischenablage kopieren";
+  btn.addEventListener("click", async () => {
+    const text = pre.textContent;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      const original = btn.textContent;
+      btn.textContent = "Kopiert!";
+      setTimeout(() => { btn.textContent = original; }, 1500);
+    } catch (e) {
+      alert("Kopieren fehlgeschlagen: " + e.message);
+    }
+  });
+  pre.parentNode.insertBefore(btn, pre);
+}
+
+[
+  "config-dump", "debug-dump", "log-view", "firebase-detail",
+  "hue-status-dump", "hue-pull-dump", "hue-live-log",
+].forEach((id) => attachCopyButton(document.getElementById(id)));
+
 // -- Server: Config / Debug / Log --------------------------------------------
 
 async function refreshConfig() {
@@ -489,6 +528,7 @@ function updateDeviceLogPanels(devices) {
 
       const pre = document.createElement("pre");
       pre.className = "log-box small";
+      attachCopyButton(pre);
       container.appendChild(pre);
       deviceLogsEl.appendChild(container);
 
@@ -1053,6 +1093,7 @@ async function refreshHueStatus() {
   try {
     const s = await fetchJSON("/api/hue/status");
     hueLiveRunning = !!s.live_running;
+    if (motionLiveHintEl) motionLiveHintEl.hidden = hueLiveRunning;
     if (!hueIpPrefilled && s.bridge_ip) {
       hueIpInput.value = s.bridge_ip;
       hueIpPrefilled = true;
@@ -1232,6 +1273,7 @@ async function refreshHueEvents() {
     });
     hueLiveLogEl.textContent = lines.join("\n") || "(noch keine Ereignisse)";
     hueLiveLogEl.scrollTop = hueLiveLogEl.scrollHeight;
+    processMotionEvents(entries);
   } catch (e) {
     hueLiveLogEl.textContent = "Fehler beim Laden: " + e.message;
   }
@@ -1240,3 +1282,450 @@ async function refreshHueEvents() {
 refreshHueStatus();
 setInterval(refreshHueStatus, 3000);
 setInterval(refreshHueEvents, 2000);
+
+// -- Gebäudeplan (Grundriss-Bild, Lampen/Sensoren platzieren, steuern) -------
+
+const floorplanFileInput = document.getElementById("floorplan-file-input");
+const floorplanUploadBtn = document.getElementById("floorplan-upload-btn");
+const floorplanRemoveBtn = document.getElementById("floorplan-remove-btn");
+const floorplanUploadStatusEl = document.getElementById("floorplan-upload-status");
+const floorplanEmptyHintEl = document.getElementById("floorplan-empty-hint");
+const floorplanLayoutEl = document.getElementById("floorplan-layout");
+const floorplanCanvasWrapEl = document.getElementById("floorplan-canvas-wrap");
+const floorplanImageEl = document.getElementById("floorplan-image");
+const floorplanOverlayEl = document.getElementById("floorplan-overlay");
+const floorplanUnplacedListEl = document.getElementById("floorplan-unplaced-list");
+
+const lightControlEmptyEl = document.getElementById("light-control-empty");
+const lightControlPanelEl = document.getElementById("light-control-panel");
+const lightControlNameEl = document.getElementById("light-control-name");
+const lightControlOnInput = document.getElementById("light-control-on");
+const lightControlBrightnessRow = document.getElementById("light-control-brightness-row");
+const lightControlBrightnessInput = document.getElementById("light-control-brightness");
+const lightControlBrightnessValueEl = document.getElementById("light-control-brightness-value");
+const lightControlColorRow = document.getElementById("light-control-color-row");
+const lightControlColorInput = document.getElementById("light-control-color");
+const lightControlMirekRow = document.getElementById("light-control-mirek-row");
+const lightControlMirekInput = document.getElementById("light-control-mirek");
+const lightControlRawEl = document.getElementById("light-control-raw");
+
+const zoneListEl = document.getElementById("zone-list");
+
+const motionLiveBannerEl = document.getElementById("motion-live-banner");
+const motionLiveHintEl = document.getElementById("motion-live-hint");
+const motionStartLiveBtn = document.getElementById("motion-start-live-btn");
+const motionLogBodyEl = document.getElementById("motion-log-body");
+
+let floorplanTopology = { lights: [], groups: [], sensors: [] };
+let floorplanLayoutState = { has_image: false, image_filename: null, positions: {} };
+let selectedLightId = null;
+let lastAppliedFloorplanImage = null;
+const motionState = {}; // sensorId -> { name, motion, lastTs }
+let lastMotionEventTs = null;
+
+// -- sRGB <-> CIE-xy Farbraumkonvertierung (Standard-Philips-Hue-Formel) -----
+
+function hexToXy(hex) {
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const lin = (c) => (c > 0.04045 ? Math.pow((c + 0.055) / 1.055, 2.4) : c / 12.92);
+  const rl = lin(r), gl = lin(g), bl = lin(b);
+  const X = rl * 0.664511 + gl * 0.154324 + bl * 0.162028;
+  const Y = rl * 0.283881 + gl * 0.668433 + bl * 0.047685;
+  const Z = rl * 0.000088 + gl * 0.072310 + bl * 0.986039;
+  const sum = X + Y + Z;
+  if (sum === 0) return { x: 0.3227, y: 0.329 };
+  return { x: X / sum, y: Y / sum };
+}
+
+function xyToHex(x, y, brightnessPct) {
+  if (!y) return "#ffffff";
+  const Yb = Math.max(1, brightnessPct || 100) / 100;
+  const Xc = (Yb / y) * x;
+  const Zc = (Yb / y) * (1 - x - y);
+  let r = Xc * 1.656492 - Yb * 0.354851 - Zc * 0.255038;
+  let g = -Xc * 0.707196 + Yb * 1.655397 + Zc * 0.036152;
+  let b = Xc * 0.051713 - Yb * 0.121364 + Zc * 1.011530;
+  const gam = (c) => (c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055);
+  [r, g, b] = [r, g, b].map(gam).map((c) => Math.round(Math.max(0, Math.min(1, c)) * 255));
+  const hex = (n) => n.toString(16).padStart(2, "0");
+  return "#" + hex(r) + hex(g) + hex(b);
+}
+
+// -- Hochladen / entfernen des Grundriss-Bilds --------------------------------
+
+floorplanUploadBtn.addEventListener("click", async () => {
+  const file = floorplanFileInput.files[0];
+  if (!file) {
+    alert("Bitte zuerst eine Bilddatei auswählen.");
+    return;
+  }
+  const formData = new FormData();
+  formData.append("image", file);
+  floorplanUploadStatusEl.textContent = "lade hoch…";
+  try {
+    const res = await fetch("/api/hue/floorplan/image", { method: "POST", body: formData });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    floorplanUploadStatusEl.textContent = "OK";
+    floorplanFileInput.value = "";
+    await refreshFloorplan();
+  } catch (e) {
+    floorplanUploadStatusEl.textContent = "Fehler: " + e.message;
+  }
+});
+
+floorplanRemoveBtn.addEventListener("click", async () => {
+  if (!confirm("Grundriss-Bild und ALLE platzierten Positionen wirklich entfernen?")) return;
+  try {
+    await fetchJSON("/api/hue/floorplan/image", { method: "DELETE" });
+    selectedLightId = null;
+    await refreshFloorplan();
+  } catch (e) {
+    alert("Fehler: " + e.message);
+  }
+});
+
+function applyFloorplanImage(status) {
+  if (status.has_image) {
+    floorplanEmptyHintEl.hidden = true;
+    floorplanLayoutEl.hidden = false;
+    if (status.image_filename !== lastAppliedFloorplanImage) {
+      floorplanImageEl.src = "/api/hue/floorplan/image?t=" + Date.now();
+      lastAppliedFloorplanImage = status.image_filename;
+    }
+  } else {
+    floorplanEmptyHintEl.hidden = false;
+    floorplanLayoutEl.hidden = true;
+    lastAppliedFloorplanImage = null;
+  }
+}
+
+// -- Grundriss laden + Icons rendern ------------------------------------------
+
+async function refreshFloorplan() {
+  try {
+    const [topo, status] = await Promise.all([
+      fetchJSON("/api/hue/topology"),
+      fetchJSON("/api/hue/floorplan"),
+    ]);
+    floorplanTopology = topo;
+    floorplanLayoutState = status;
+    applyFloorplanImage(status);
+    renderFloorplanCanvas();
+    renderZoneList();
+    refreshLightControlPanel();
+  } catch (e) {
+    floorplanEmptyHintEl.hidden = false;
+    floorplanEmptyHintEl.textContent = "Fehler beim Laden: " + e.message;
+  }
+}
+
+function placeableResources() {
+  const lights = floorplanTopology.lights.map((l) => ({ id: l.id, kind: "light", label: l.name, data: l }));
+  const sensors = (floorplanTopology.sensors || []).map((s) => ({
+    id: s.id, kind: "sensor-" + s.type, label: `${s.name} (${s.type})`, data: s,
+  }));
+  return [...lights, ...sensors];
+}
+
+function iconGlyph(res) {
+  if (res.kind === "light") return res.data.on ? "💡" : "🔘";
+  if (res.kind === "sensor-motion") return (motionState[res.id] && motionState[res.id].motion) ? "🏃" : "🚶";
+  if (res.kind === "sensor-light_level") return "🔆";
+  if (res.kind === "sensor-temperature") return "🌡️";
+  return "❓";
+}
+
+function makeIconContent(res) {
+  const glyph = document.createElement("div");
+  glyph.className = "floorplan-icon-glyph";
+  glyph.textContent = iconGlyph(res);
+  const label = document.createElement("span");
+  label.className = "floorplan-icon-label";
+  label.textContent = res.label;
+  return [glyph, label];
+}
+
+function renderFloorplanCanvas() {
+  const positions = floorplanLayoutState.positions || {};
+  const resources = placeableResources();
+  floorplanOverlayEl.innerHTML = "";
+  floorplanUnplacedListEl.innerHTML = "";
+
+  resources.forEach((res) => {
+    const pos = positions[res.id];
+    if (pos) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "floorplan-icon placed";
+      if (res.id === selectedLightId) wrapper.classList.add("selected");
+      if (res.kind === "sensor-motion" && motionState[res.id] && motionState[res.id].motion) {
+        wrapper.classList.add("motion-active");
+      }
+      wrapper.style.left = pos.x * 100 + "%";
+      wrapper.style.top = pos.y * 100 + "%";
+      wrapper.draggable = true;
+      wrapper.dataset.resourceId = res.id;
+      makeIconContent(res).forEach((el) => wrapper.appendChild(el));
+
+      wrapper.addEventListener("dragstart", (e) => {
+        e.dataTransfer.setData("text/plain", res.id);
+      });
+      if (res.kind === "light") {
+        wrapper.addEventListener("click", () => selectLight(res.id));
+      }
+      const unplaceBtn = document.createElement("button");
+      unplaceBtn.type = "button";
+      unplaceBtn.className = "floorplan-unplace-btn";
+      unplaceBtn.textContent = "×";
+      unplaceBtn.title = "Von der Karte entfernen";
+      unplaceBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        unplaceResource(res.id);
+      });
+      wrapper.appendChild(unplaceBtn);
+      floorplanOverlayEl.appendChild(wrapper);
+    } else {
+      const card = document.createElement("div");
+      card.className = "floorplan-unplaced-item";
+      card.draggable = true;
+      card.dataset.resourceId = res.id;
+      makeIconContent(res).forEach((el) => card.appendChild(el));
+      card.addEventListener("dragstart", (e) => {
+        e.dataTransfer.setData("text/plain", res.id);
+      });
+      floorplanUnplacedListEl.appendChild(card);
+    }
+  });
+}
+
+floorplanCanvasWrapEl.addEventListener("dragover", (e) => {
+  e.preventDefault();
+});
+floorplanCanvasWrapEl.addEventListener("drop", async (e) => {
+  e.preventDefault();
+  const resourceId = e.dataTransfer.getData("text/plain");
+  if (!resourceId) return;
+  const rect = floorplanCanvasWrapEl.getBoundingClientRect();
+  const x = (e.clientX - rect.left) / rect.width;
+  const y = (e.clientY - rect.top) / rect.height;
+  try {
+    await fetchJSON("/api/hue/floorplan/position", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ resource_id: resourceId, x, y }),
+    });
+    await refreshFloorplan();
+  } catch (err) {
+    alert("Position konnte nicht gespeichert werden: " + err.message);
+  }
+});
+
+async function unplaceResource(id) {
+  try {
+    await fetchJSON(`/api/hue/floorplan/position/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (id === selectedLightId) selectLight(null);
+    await refreshFloorplan();
+  } catch (e) {
+    alert("Fehler: " + e.message);
+  }
+}
+
+// -- Lampen-Steuerpanel --------------------------------------------------------
+
+function selectLight(id) {
+  selectedLightId = id;
+  renderFloorplanCanvas();
+  refreshLightControlPanel();
+}
+
+function refreshLightControlPanel() {
+  const light = floorplanTopology.lights.find((l) => l.id === selectedLightId);
+  if (!light) {
+    lightControlEmptyEl.hidden = false;
+    lightControlPanelEl.hidden = true;
+    return;
+  }
+  lightControlEmptyEl.hidden = true;
+  lightControlPanelEl.hidden = false;
+  lightControlNameEl.textContent = light.name + (light.group_name ? ` (${light.group_name})` : "");
+
+  if (document.activeElement !== lightControlOnInput) {
+    lightControlOnInput.checked = !!light.on;
+  }
+
+  lightControlBrightnessRow.hidden = !light.capabilities.dimmable;
+  if (light.capabilities.dimmable && document.activeElement !== lightControlBrightnessInput) {
+    const b = light.brightness != null ? light.brightness : 100;
+    lightControlBrightnessInput.value = b;
+    lightControlBrightnessValueEl.textContent = Math.round(b) + "%";
+  }
+
+  lightControlColorRow.hidden = !light.capabilities.color;
+  if (light.capabilities.color && light.xy && document.activeElement !== lightControlColorInput) {
+    lightControlColorInput.value = xyToHex(light.xy.x, light.xy.y, light.brightness);
+  }
+
+  lightControlMirekRow.hidden = !light.capabilities.color_temperature;
+  if (light.capabilities.color_temperature && document.activeElement !== lightControlMirekInput) {
+    lightControlMirekInput.min = light.mirek_min || 153;
+    lightControlMirekInput.max = light.mirek_max || 500;
+    lightControlMirekInput.value = light.mirek != null ? light.mirek : 300;
+  }
+
+  lightControlRawEl.textContent = JSON.stringify(light, null, 2);
+}
+
+async function sendLightState(id, body) {
+  try {
+    await fetchJSON(`/api/hue/light/${encodeURIComponent(id)}/state`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    alert("Lampe konnte nicht gesteuert werden: " + e.message);
+  }
+}
+
+lightControlOnInput.addEventListener("change", () => {
+  if (selectedLightId) sendLightState(selectedLightId, { on: lightControlOnInput.checked });
+});
+
+let lightBrightnessDebounce = null;
+lightControlBrightnessInput.addEventListener("input", () => {
+  lightControlBrightnessValueEl.textContent = lightControlBrightnessInput.value + "%";
+  clearTimeout(lightBrightnessDebounce);
+  lightBrightnessDebounce = setTimeout(() => {
+    if (selectedLightId) sendLightState(selectedLightId, { brightness: parseFloat(lightControlBrightnessInput.value) });
+  }, 250);
+});
+
+let lightColorDebounce = null;
+lightControlColorInput.addEventListener("input", () => {
+  clearTimeout(lightColorDebounce);
+  lightColorDebounce = setTimeout(() => {
+    if (!selectedLightId) return;
+    const xy = hexToXy(lightControlColorInput.value);
+    sendLightState(selectedLightId, { xy: [xy.x, xy.y] });
+  }, 250);
+});
+
+let lightMirekDebounce = null;
+lightControlMirekInput.addEventListener("input", () => {
+  clearTimeout(lightMirekDebounce);
+  lightMirekDebounce = setTimeout(() => {
+    if (selectedLightId) sendLightState(selectedLightId, { mirek: parseInt(lightControlMirekInput.value, 10) });
+  }, 250);
+});
+
+// -- Räume/Zonen ----------------------------------------------------------------
+
+async function sendGroupState(groupedLightId, body) {
+  if (!groupedLightId) return;
+  try {
+    await fetchJSON(`/api/hue/group/${encodeURIComponent(groupedLightId)}/state`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    alert("Zone konnte nicht gesteuert werden: " + e.message);
+  }
+}
+
+function renderZoneList() {
+  zoneListEl.innerHTML = "";
+  (floorplanTopology.groups || []).forEach((g) => {
+    const row = document.createElement("div");
+    row.className = "row zone-row";
+
+    const label = document.createElement("strong");
+    label.textContent = `${g.name} (${g.type}, ${g.light_ids.length} Lampe(n))`;
+
+    const onLabel = document.createElement("label");
+    const onInput = document.createElement("input");
+    onInput.type = "checkbox";
+    onInput.checked = !!g.on;
+    onInput.addEventListener("change", () => sendGroupState(g.grouped_light_id, { on: onInput.checked }));
+    onLabel.appendChild(onInput);
+    onLabel.appendChild(document.createTextNode(" An"));
+
+    const brightnessInput = document.createElement("input");
+    brightnessInput.type = "range";
+    brightnessInput.min = "0";
+    brightnessInput.max = "100";
+    brightnessInput.value = g.brightness != null ? g.brightness : 100;
+    let debounce = null;
+    brightnessInput.addEventListener("input", () => {
+      clearTimeout(debounce);
+      debounce = setTimeout(
+        () => sendGroupState(g.grouped_light_id, { brightness: parseFloat(brightnessInput.value) }),
+        250
+      );
+    });
+
+    row.appendChild(label);
+    row.appendChild(onLabel);
+    row.appendChild(brightnessInput);
+    zoneListEl.appendChild(row);
+  });
+}
+
+// -- Bewegungsmelder: live aus dem SSE-Eventstream (siehe refreshHueEvents) ---
+
+motionStartLiveBtn.addEventListener("click", async () => {
+  try {
+    await fetchJSON("/api/hue/live/start", { method: "POST" });
+  } catch (e) {
+    alert("Live-Start fehlgeschlagen: " + e.message);
+  }
+});
+
+function addMotionLogRow(ts, name, motion) {
+  const tr = document.createElement("tr");
+  tr.innerHTML =
+    `<td>${toLocalTime(ts)}</td><td>${escapeHtml(name)}</td>` +
+    `<td>${motion ? "Bewegung erkannt" : "keine Bewegung mehr"}</td>`;
+  motionLogBodyEl.insertBefore(tr, motionLogBodyEl.firstChild);
+  while (motionLogBodyEl.children.length > 100) motionLogBodyEl.removeChild(motionLogBodyEl.lastChild);
+}
+
+function updateMotionBanner() {
+  const active = Object.values(motionState).filter((m) => m.motion);
+  if (active.length) {
+    motionLiveBannerEl.textContent = "Bewegung erkannt: " + active.map((m) => m.name).join(", ");
+    motionLiveBannerEl.className = "motion-banner motion-active";
+  } else {
+    motionLiveBannerEl.textContent = "Keine Bewegung erkannt";
+    motionLiveBannerEl.className = "motion-banner motion-idle";
+  }
+}
+
+// Wird aus refreshHueEvents() (Hue-Tab) heraus mit den frisch geholten
+// Log-Eintraegen aufgerufen - EIN Polling-Zyklus fuer beide Tabs, statt den
+// SSE-Eventstream zweimal getrennt abzufragen.
+function processMotionEvents(entries) {
+  let changed = false;
+  entries.forEach((e) => {
+    if (e.kind !== "live-event" || !e.event || !Array.isArray(e.event.data)) return;
+    if (lastMotionEventTs && e.ts <= lastMotionEventTs) return;
+    e.event.data.forEach((item) => {
+      if (item.type !== "motion" || !item.motion) return;
+      const sensor = (floorplanTopology.sensors || []).find((s) => s.id === item.id);
+      const name = sensor ? sensor.name : item.id;
+      motionState[item.id] = { name, motion: !!item.motion.motion, lastTs: e.ts };
+      addMotionLogRow(e.ts, name, item.motion.motion);
+      changed = true;
+    });
+    lastMotionEventTs = e.ts;
+  });
+  if (changed) {
+    updateMotionBanner();
+    renderFloorplanCanvas();
+  }
+}
+
+refreshFloorplan();
+setInterval(refreshFloorplan, 5000);

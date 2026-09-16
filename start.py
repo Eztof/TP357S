@@ -15,6 +15,7 @@ from app.config import load_config
 from app.devices import DeviceStore
 from app.firebase_sync import FirebaseSync
 from app.hue_client import HueManager
+from app.hue_layout import HueLayout
 from app.logging_setup import setup_logging
 from app.server import create_app
 from app.state import AppState
@@ -40,6 +41,7 @@ def main() -> None:
     devices = DeviceStore(config.devices_path)
     ui_state = UiState(config.ui_state_path)
     hue = HueManager(config.hue_config_path)
+    hue_layout = HueLayout(config.hue_layout_dir)
     logger.info("Gekoppelte Geraete geladen: %s", [d.mac for d in devices.list()])
 
     ble = BleManager(config, state, storage, devices)
@@ -55,7 +57,7 @@ def main() -> None:
     firebase = FirebaseSync(config, storage, devices)
     firebase.start()
 
-    app = create_app(config, state, storage, ble, devices, firebase, ui_state, hue)
+    app = create_app(config, state, storage, ble, devices, firebase, ui_state, hue, hue_layout)
     url = f"http://{config.web_host}:{config.web_port}/"
 
     def open_browser() -> None:
