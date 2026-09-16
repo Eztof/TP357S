@@ -491,12 +491,19 @@ datensammelnd/roh — was daraus gebaut wird, ist ein späterer Schritt.
    „Bridge prüfen“ ruft `GET https://<ip>/api/config` auf — funktioniert
    OHNE Kopplung, zeigt Name/Bridge-ID/Software-Version zur Bestätigung,
    dass unter der IP wirklich eine Hue-Bridge antwortet.
-2. Die **runde Taste auf der Bridge drücken**, danach innerhalb von 30
-   Sekunden auf „Jetzt koppeln“ klicken. Das ist ein Sicherheitsmechanismus
-   der Bridge selbst (verhindert, dass sich fremde Geräte im Netz
-   automatisch koppeln) und kann nicht automatisiert werden — Fehler
-   „link button not pressed“ bedeutet: Taste (nochmal) drücken, dann sofort
-   erneut auf „Jetzt koppeln“ klicken.
+2. Auf **„Jetzt koppeln“** klicken — das öffnet ein 30-Sekunden-Fenster, in
+   dem `app/hue_client.py` automatisch alle ~1,2s einen neuen
+   Kopplungsversuch startet (`app.js`, `attemptHuePair`-Schleife). Irgendwann
+   *innerhalb* dieses Fensters die **runde Taste auf der Bridge drücken** —
+   Reihenfolge zum Klick egal. Das ist ein Sicherheitsmechanismus der
+   Bridge selbst (verhindert, dass sich fremde Geräte im Netz automatisch
+   koppeln) und kann nicht abgekürzt werden; die Bridge gibt dabei bewusst
+   **kein sichtbares Feedback** (kein Blinken o. Ä.) — sie liefert bei jedem
+   Versuch vor dem Tastendruck einfach still Fehler „link button not
+   pressed“ zurück, das ist normal und kein Fehlerfall. Andere bereits
+   gekoppelte Apps (offizielle Hue-App, HomeKit, Home Assistant, ...) sind
+   von einer neuen Kopplung nicht betroffen — jede App bekommt einen
+   eigenen, unabhängigen `application_key`, keine ersetzt eine andere.
 3. Nach erfolgreicher Kopplung wird der `application_key` (Zugangs-Token)
    zusammen mit Bridge-IP und Bridge-ID lokal in `data/hue_config.json`
    gespeichert (wie die Firebase-Zugangsdaten in `.gitignore` eingetragen -

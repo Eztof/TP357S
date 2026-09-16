@@ -1057,7 +1057,7 @@ async function refreshHueStatus() {
       hueIpInput.value = s.bridge_ip;
       hueIpPrefilled = true;
     }
-    huePairBtn.disabled = false;
+    if (!huePairPolling) huePairBtn.disabled = false;
     hueForgetBtn.disabled = !s.paired;
     huePullBtn.disabled = !s.paired;
     hueLiveStartBtn.disabled = !s.paired || s.live_running;
@@ -1101,26 +1101,61 @@ hueProbeBtn.addEventListener("click", async () => {
   }
 });
 
+// Die Bridge gibt bei einer Kopplungsanfrage KEIN sichtbares Feedback (kein
+// Blinken o.ae.) - sie liefert einfach still Fehler 101 ("link button not
+// pressed") zurueck, wenn der Knopf nicht innerhalb der letzten 30s gedrueckt
+// wurde. Statt exaktes Timing vom Nutzer zu verlangen (Knopf druecken UND
+// exakt daraufhin klicken), wird hier 30s lang automatisch im Hintergrund
+// weiterversucht - der Knopf kann jederzeit in diesem Fenster gedrueckt
+// werden, Reihenfolge zum Klick egal.
+const HUE_PAIR_WINDOW_MS = 30000;
+const HUE_PAIR_RETRY_MS = 1200;
+let huePairPolling = false;
+
+async function attemptHuePair(ip) {
+  return fetchJSON("/api/hue/pair", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ bridge_ip: ip }),
+  });
+}
+
 huePairBtn.addEventListener("click", async () => {
   const ip = hueIpInput.value.trim();
   if (!ip) {
     alert("Bitte Bridge-IP eintragen.");
     return;
   }
+  if (huePairPolling) return;
+  huePairPolling = true;
   huePairBtn.disabled = true;
-  huePairStatusEl.textContent = "koppele…";
+  const deadline = Date.now() + HUE_PAIR_WINDOW_MS;
+  huePairStatusEl.textContent = "Bitte jetzt die Taste auf der Bridge drücken (30s-Fenster läuft)…";
   try {
-    const res = await fetchJSON("/api/hue/pair", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bridge_ip: ip }),
-    });
-    if (!res.ok) {
-      alert("Koppeln fehlgeschlagen: " + res.error + "\n\nHast du die Taste auf der Bridge gedrückt (30s-Fenster)?");
+    while (Date.now() < deadline) {
+      let res;
+      try {
+        res = await attemptHuePair(ip);
+      } catch (e) {
+        huePairStatusEl.textContent = "Fehler: " + e.message;
+        return;
+      }
+      if (res.ok) {
+        huePairStatusEl.textContent = "Gekoppelt!";
+        return;
+      }
+      const buttonNotPressed = /link button/i.test(res.error || "");
+      if (!buttonNotPressed) {
+        huePairStatusEl.textContent = "Fehler: " + res.error;
+        return;
+      }
+      const remaining = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+      huePairStatusEl.textContent = `Bitte jetzt die Taste auf der Bridge drücken – warte… (noch ${remaining}s)`;
+      await new Promise((resolve) => setTimeout(resolve, HUE_PAIR_RETRY_MS));
     }
-  } catch (e) {
-    alert("Koppeln fehlgeschlagen: " + e.message);
+    huePairStatusEl.textContent = "Zeitfenster (30s) abgelaufen, ohne dass die Taste gedrückt wurde. Nochmal versuchen.";
   } finally {
+    huePairPolling = false;
     huePairBtn.disabled = false;
     refreshHueStatus();
   }
