@@ -22,6 +22,7 @@ Zwei Betriebsarten:
 import json
 import logging
 import threading
+import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,7 +59,7 @@ class HueManager:
 
         self.live_running = False
         self._live_thread: Optional[threading.Thread] = None
-        self._live_stop_event = threading.Event()
+        self._live_generation = 0
         self.last_live_error: Optional[str] = None
         self.live_event_count = 0
         self._event_log: Deque[dict] = deque(maxlen=EVENT_BUFFER_SIZE)
@@ -255,6 +256,11 @@ class HueManager:
     # -- Live (Server-Sent Events, /eventstream/clip/v2) --------------------------
 
     def start_live(self) -> None:
+        """Startet den Live-Stream in einem neuen Thread mit einer neuen
+        "Generation"-Nummer statt eines wiederverwendeten threading.Event
+        (siehe _is_current_generation fuer die Begruendung - ein frueherer
+        Bug fuehrte zu zwei parallel laufenden Verbindungen und dadurch
+        jedem Live-Ereignis doppelt im Log)."""
         if not self.is_paired():
             raise RuntimeError("Nicht mit einer Hue-Bridge gekoppelt.")
         with self._lock:
@@ -262,31 +268,53 @@ class HueManager:
                 return
             self.live_running = True
             self.last_live_error = None
-        self._live_stop_event.clear()
-        self._live_thread = threading.Thread(target=self._live_loop, name="hue-live", daemon=True)
+            self._live_generation += 1
+            generation = self._live_generation
+        self._live_thread = threading.Thread(target=self._live_loop, args=(generation,), name="hue-live", daemon=True)
         self._live_thread.start()
-        logger.info("Hue-Live-Stream gestartet")
+        logger.info("Hue-Live-Stream gestartet (generation=%d)", generation)
 
     def stop_live(self) -> None:
-        self._live_stop_event.set()
+        """Setzt live_running=False UND erhoeht die Generation-Nummer.
+
+        Ein aktuell blockierender Netzwerk-Read (resp.iter_lines()) laesst
+        sich nicht sofort von aussen abbrechen - der alte Thread merkt den
+        Stop-Wunsch erst beim naechsten empfangenen Byte/Timeout. Die
+        Generation-Pruefung sorgt dafuer, dass er ab dann garantiert NICHTS
+        mehr tut (keine weiteren Events anhaengen, keinen Reconnect
+        versuchen), selbst wenn zwischenzeitlich ein neuer start_live()-
+        Aufruf eine neue Generation gestartet hat. Frueher wurde dafuer ein
+        einzelnes, wiederverwendetes threading.Event genutzt - dessen
+        naechstes clear() (beim naechsten Start) hat einen noch nicht
+        beendeten alten Thread versehentlich "reaktiviert", weil er
+        dieselbe Event-Instanz beobachtet hat wie der neue Thread."""
         with self._lock:
             self.live_running = False
+            self._live_generation += 1
         logger.info("Hue-Live-Stream gestoppt")
 
-    def _live_loop(self) -> None:
+    def _is_current_generation(self, generation: int) -> bool:
+        with self._lock:
+            return self.live_running and self._live_generation == generation
+
+    def _live_loop(self, generation: int) -> None:
         url = f"https://{self.bridge_ip}/eventstream/clip/v2"
         headers = {"hue-application-key": self.application_key, "Accept": "text/event-stream"}
-        while not self._live_stop_event.is_set():
+        while self._is_current_generation(generation):
             try:
+                # Endlicher Read-Timeout (statt None): sorgt dafuer, dass
+                # die Schleife auch bei laengerer Funkstille der Bridge
+                # regelmaessig aufwacht und die Generation neu prueft,
+                # statt fuer immer in iter_lines() zu haengen.
                 with requests.get(
-                    url, headers=headers, stream=True, timeout=(HTTP_TIMEOUT_SECONDS, None), verify=False
+                    url, headers=headers, stream=True, timeout=(HTTP_TIMEOUT_SECONDS, 90), verify=False
                 ) as resp:
                     resp.raise_for_status()
-                    logger.info("Hue-Eventstream verbunden")
-                    self._append_event({"kind": "info", "note": "Eventstream verbunden"})
+                    logger.info("Hue-Eventstream verbunden (generation=%d)", generation)
+                    self._append_event({"kind": "info", "note": f"Eventstream verbunden (Generation {generation})"})
                     data_lines: List[str] = []
                     for raw_line in resp.iter_lines(decode_unicode=True):
-                        if self._live_stop_event.is_set():
+                        if not self._is_current_generation(generation):
                             break
                         if raw_line is None:
                             continue
@@ -301,17 +329,15 @@ class HueManager:
                         if line.startswith("data:"):
                             data_lines.append(line[len("data:"):].strip())
             except Exception as exc:  # noqa: BLE001
-                if self._live_stop_event.is_set():
+                if not self._is_current_generation(generation):
                     break
                 logger.warning("Hue-Eventstream-Verbindung verloren/fehlgeschlagen: %s", exc)
                 with self._lock:
                     self.last_live_error = f"{type(exc).__name__}: {exc}"
                 self._append_event({"kind": "error", "note": f"{type(exc).__name__}: {exc}"})
-            if not self._live_stop_event.is_set():
-                self._live_stop_event.wait(SSE_RECONNECT_DELAY_SECONDS)
-        with self._lock:
-            self.live_running = False
-        logger.info("Hue-Eventstream-Schleife beendet")
+            if self._is_current_generation(generation):
+                time.sleep(SSE_RECONNECT_DELAY_SECONDS)
+        logger.info("Hue-Eventstream-Schleife beendet (generation=%d)", generation)
 
     def _handle_sse_payload(self, payload: str) -> None:
         try:
