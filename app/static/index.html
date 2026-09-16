@@ -139,12 +139,51 @@
 </div>
 
 <div class="tab-content" data-tab="hue">
-  <div class="panel" data-panel-id="hue-placeholder">
-    <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>Hue</h2></div>
-    <div class="panel-body">
-      <p>Kommt im nächsten Schritt.</p>
+
+<div class="panel" data-panel-id="hue-connection">
+  <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>Hue-Bridge: Verbindung</h2></div>
+  <div class="panel-body">
+    <div class="row">
+      <label>Bridge-IP: <input id="hue-ip" type="text" placeholder="192.168.178.24" value="192.168.178.24" size="16" /></label>
+      <button id="hue-probe-btn">Bridge prüfen</button>
+      <span id="hue-probe-status" class="small"></span>
     </div>
+    <p class="small">
+      Zum Koppeln: runde Taste auf der Bridge drücken, dann innerhalb von 30 Sekunden auf
+      „Jetzt koppeln“ klicken (Sicherheitsmechanismus der Bridge, nicht automatisierbar).
+    </p>
+    <div class="row">
+      <button id="hue-pair-btn">Jetzt koppeln</button>
+      <button id="hue-forget-btn">Kopplung aufheben</button>
+      <span id="hue-pair-status" class="small"></span>
+    </div>
+    <pre id="hue-status-dump">lade…</pre>
   </div>
+</div>
+
+<div class="panel" data-panel-id="hue-pull">
+  <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>Einmaliger Abruf (/clip/v2/resource)</h2></div>
+  <div class="panel-body">
+    <div class="row">
+      <button id="hue-pull-btn">Jetzt einmalig abrufen</button>
+      <span id="hue-pull-status" class="small"></span>
+    </div>
+    <pre id="hue-pull-dump" class="log-box">(noch kein Abruf)</pre>
+  </div>
+</div>
+
+<div class="panel" data-panel-id="hue-live">
+  <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>Live (Server-Sent Events)</h2></div>
+  <div class="panel-body">
+    <div class="row">
+      <button id="hue-live-start-btn">Live starten</button>
+      <button id="hue-live-stop-btn">Live stoppen</button>
+      <span id="hue-live-status" class="small"></span>
+    </div>
+    <pre id="hue-live-log" class="log-box">(noch keine Ereignisse)</pre>
+  </div>
+</div>
+
 </div>
 
 <script src="/app.js"></script>

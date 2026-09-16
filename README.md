@@ -41,7 +41,8 @@ TP357S/
     state.py                   # geteilter Programmstatus (alle Sensoren, Scan, Rohdaten-Logs)
     logging_setup.py            # Logdatei + globale Crash-Hooks (Haupt-/Hintergrund-Threads, asyncio)
     ui_state.py                   # persistiert Tab/Panel-Zustand des Dashboards (data/ui_state.json)
-    server.py                       # lokaler Webserver (Flask) + JSON-API
+    hue_client.py                   # Anbindung an die lokale Philips-Hue-Bridge (CLIP v2)
+    server.py                         # lokaler Webserver (Flask) + JSON-API
     static/                           # Dashboard (HTML/CSS/JS, bewusst schmucklos)
   data/
     tp357s.db                        # SQLite-Datenbank (wird automatisch angelegt)
@@ -477,6 +478,58 @@ Dokumenten in derselben Collection — beide Formate sind an der Anzahl der
 Felder (`readings`-Array vorhanden oder nicht) unterscheidbar, falls das
 für eine spätere Auswertung relevant wird.
 
+## Hue-Bridge (Reiter „Hue“, `app/hue_client.py`)
+
+Rein lokale Anbindung an eine Philips-Hue-Bridge im selben Heimnetz (kein
+Cloud-Zugriff) über deren moderne **CLIP-v2-API**. Aktuell rein
+datensammelnd/roh — was daraus gebaut wird, ist ein späterer Schritt.
+
+### Verbinden
+
+1. Im Reiter „Hue“ → „Hue-Bridge: Verbindung“: Bridge-IP eintragen (im
+   Heimnetzwerk-Router oder in der offiziellen Hue-App nachzuschauen).
+   „Bridge prüfen“ ruft `GET https://<ip>/api/config` auf — funktioniert
+   OHNE Kopplung, zeigt Name/Bridge-ID/Software-Version zur Bestätigung,
+   dass unter der IP wirklich eine Hue-Bridge antwortet.
+2. Die **runde Taste auf der Bridge drücken**, danach innerhalb von 30
+   Sekunden auf „Jetzt koppeln“ klicken. Das ist ein Sicherheitsmechanismus
+   der Bridge selbst (verhindert, dass sich fremde Geräte im Netz
+   automatisch koppeln) und kann nicht automatisiert werden — Fehler
+   „link button not pressed“ bedeutet: Taste (nochmal) drücken, dann sofort
+   erneut auf „Jetzt koppeln“ klicken.
+3. Nach erfolgreicher Kopplung wird der `application_key` (Zugangs-Token)
+   zusammen mit Bridge-IP und Bridge-ID lokal in `data/hue_config.json`
+   gespeichert (wie die Firebase-Zugangsdaten in `.gitignore` eingetragen -
+   landet nicht im Repo). „Kopplung aufheben“ löscht diese lokal wieder.
+
+### Einmaliger Abruf
+
+„Jetzt einmalig abrufen“ ruft `GET /clip/v2/resource` auf — liefert IN
+EINEM Aufruf ALLE Ressourcen, die die Bridge kennt (Lichter, Sensoren,
+Räume, Zonen, Szenen, Tasten, Geräte, Bewegungsmelder, Helligkeit,
+Temperatur, Stromverbrauch, Software-Update-Status, ...) als rohes JSON.
+Wird komplett im Dashboard angezeigt (keine Vorverarbeitung/Filterung).
+
+### Live
+
+„Live starten“ öffnet einen echten **Server-Sent-Events-Push-Stream**
+(`GET /eventstream/clip/v2`, dauerhafte HTTPS-Verbindung) statt zu pollen -
+die Bridge schickt Änderungen (Lampe an/aus, Sensor ausgelöst, Helligkeit
+geändert, ...) in Echtzeit, sobald sie passieren. Jedes empfangene Ereignis
+landet roh im Live-Log; bricht die Verbindung ab, wird automatisch nach 5s
+neu verbunden (`SSE_RECONNECT_DELAY_SECONDS` in `app/hue_client.py`).
+„Live stoppen“ beendet den Stream sauber.
+
+### TLS-Zertifikat
+
+Die Bridge nutzt für ihre lokale HTTPS-API ein selbstsigniertes Zertifikat
+(keine öffentliche CA). Auf Nutzerwunsch wird die Zertifikatsprüfung
+bewusst deaktiviert (`verify=False` bei allen Aufrufen) — die Verbindung
+bleibt trotzdem TLS-verschlüsselt, nur die Zertifikatskette wird nicht
+geprüft. Bewusster Kompromiss fürs eigene Heimnetz, analog zur bereits
+beim Firebase-Upload besprochenen Haltung („Sicherheit spielt hier eine
+untergeordnete Rolle“).
+
 ## Datenschutz / Speicherort
 
 Alle Daten bleiben lokal auf dem PC in `data/tp357s.db` (SQLite) — außer,
@@ -484,4 +537,7 @@ Firebase-Upload ist aktiviert (siehe oben), dann werden alle neuen
 Live-/Verlaufs-Messwerte zusätzlich in dein eigenes Firestore-Projekt
 hochgeladen. Ohne Firebase-Upload gibt es keine Cloud-Anbindung; der
 Webserver lauscht standardmäßig nur auf `127.0.0.1` (nicht im Netzwerk
-erreichbar).
+erreichbar). Die Hue-Bridge-Anbindung bleibt vollständig im lokalen
+Heimnetz (kein Cloud-Zugriff auf die Bridge); der `application_key`
+liegt lokal in `data/hue_config.json`, wie die Firebase-Zugangsdaten
+nicht im Repo.

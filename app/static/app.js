@@ -35,6 +35,21 @@ const firebaseUploadNowBtn = document.getElementById("firebase-upload-now-btn");
 const firebaseStatusEl = document.getElementById("firebase-status");
 const firebaseDetailEl = document.getElementById("firebase-detail");
 
+const hueIpInput = document.getElementById("hue-ip");
+const hueProbeBtn = document.getElementById("hue-probe-btn");
+const hueProbeStatusEl = document.getElementById("hue-probe-status");
+const huePairBtn = document.getElementById("hue-pair-btn");
+const hueForgetBtn = document.getElementById("hue-forget-btn");
+const huePairStatusEl = document.getElementById("hue-pair-status");
+const hueStatusDumpEl = document.getElementById("hue-status-dump");
+const huePullBtn = document.getElementById("hue-pull-btn");
+const huePullStatusEl = document.getElementById("hue-pull-status");
+const huePullDumpEl = document.getElementById("hue-pull-dump");
+const hueLiveStartBtn = document.getElementById("hue-live-start-btn");
+const hueLiveStopBtn = document.getElementById("hue-live-stop-btn");
+const hueLiveStatusEl = document.getElementById("hue-live-status");
+const hueLiveLogEl = document.getElementById("hue-live-log");
+
 let pairedMacs = new Set();
 let selectedHistoryMac = null;
 const trackedDeviceLogs = new Map(); // mac -> { el, intervalId }
@@ -1028,3 +1043,158 @@ firebaseUploadNowBtn.addEventListener("click", async () => {
     }, 2000);
   }
 });
+
+// -- Hue-Bridge ------------------------------------------------------------
+
+let hueIpPrefilled = false;
+let hueLiveRunning = false;
+
+async function refreshHueStatus() {
+  try {
+    const s = await fetchJSON("/api/hue/status");
+    hueLiveRunning = !!s.live_running;
+    if (!hueIpPrefilled && s.bridge_ip) {
+      hueIpInput.value = s.bridge_ip;
+      hueIpPrefilled = true;
+    }
+    huePairBtn.disabled = false;
+    hueForgetBtn.disabled = !s.paired;
+    huePullBtn.disabled = !s.paired;
+    hueLiveStartBtn.disabled = !s.paired || s.live_running;
+    hueLiveStopBtn.disabled = !s.live_running;
+
+    huePairStatusEl.textContent = s.paired
+      ? `gekoppelt: ${s.bridge_ip} (bridge_id=${s.bridge_id || "?"})`
+      : "nicht gekoppelt";
+    hueLiveStatusEl.textContent = s.live_running
+      ? `läuft — ${s.live_event_count} Ereignis(se) empfangen`
+      : s.last_live_error
+      ? `gestoppt — letzter Fehler: ${s.last_live_error}`
+      : "gestoppt";
+    hueStatusDumpEl.textContent = JSON.stringify(s, null, 2);
+  } catch (e) {
+    hueStatusDumpEl.textContent = "Fehler: " + e.message;
+  }
+}
+
+hueProbeBtn.addEventListener("click", async () => {
+  const ip = hueIpInput.value.trim();
+  if (!ip) {
+    alert("Bitte Bridge-IP eintragen.");
+    return;
+  }
+  hueProbeBtn.disabled = true;
+  hueProbeStatusEl.textContent = "prüfe…";
+  try {
+    const res = await fetchJSON("/api/hue/probe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bridge_ip: ip }),
+    });
+    hueProbeStatusEl.textContent = res.ok
+      ? `OK: ${res.info.name || "?"} (bridgeid=${res.info.bridgeid || "?"}, swversion=${res.info.swversion || "?"})`
+      : "Fehler: " + res.error;
+  } catch (e) {
+    hueProbeStatusEl.textContent = "Fehler: " + e.message;
+  } finally {
+    hueProbeBtn.disabled = false;
+  }
+});
+
+huePairBtn.addEventListener("click", async () => {
+  const ip = hueIpInput.value.trim();
+  if (!ip) {
+    alert("Bitte Bridge-IP eintragen.");
+    return;
+  }
+  huePairBtn.disabled = true;
+  huePairStatusEl.textContent = "koppele…";
+  try {
+    const res = await fetchJSON("/api/hue/pair", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bridge_ip: ip }),
+    });
+    if (!res.ok) {
+      alert("Koppeln fehlgeschlagen: " + res.error + "\n\nHast du die Taste auf der Bridge gedrückt (30s-Fenster)?");
+    }
+  } catch (e) {
+    alert("Koppeln fehlgeschlagen: " + e.message);
+  } finally {
+    huePairBtn.disabled = false;
+    refreshHueStatus();
+  }
+});
+
+hueForgetBtn.addEventListener("click", async () => {
+  if (!confirm("Hue-Kopplung wirklich aufheben?")) return;
+  try {
+    await fetchJSON("/api/hue/forget", { method: "POST" });
+  } catch (e) {
+    alert("Fehler: " + e.message);
+  } finally {
+    refreshHueStatus();
+  }
+});
+
+huePullBtn.addEventListener("click", async () => {
+  huePullBtn.disabled = true;
+  huePullStatusEl.textContent = "rufe ab…";
+  try {
+    const res = await fetchJSON("/api/hue/pull-now", { method: "POST" });
+    if (res.ok) {
+      const total = (res.data.data || []).length;
+      huePullStatusEl.textContent = `OK: ${total} Ressourcen (${toLocalTime(new Date().toISOString())})`;
+      huePullDumpEl.textContent = JSON.stringify(res.data, null, 2);
+    } else {
+      huePullStatusEl.textContent = "Fehler: " + res.error;
+    }
+  } catch (e) {
+    huePullStatusEl.textContent = "Fehler: " + e.message;
+  } finally {
+    huePullBtn.disabled = false;
+    refreshHueStatus();
+  }
+});
+
+hueLiveStartBtn.addEventListener("click", async () => {
+  hueLiveStartBtn.disabled = true;
+  try {
+    const res = await fetchJSON("/api/hue/live/start", { method: "POST" });
+    if (!res.ok) alert("Live-Start fehlgeschlagen: " + res.error);
+  } catch (e) {
+    alert("Live-Start fehlgeschlagen: " + e.message);
+  } finally {
+    refreshHueStatus();
+  }
+});
+
+hueLiveStopBtn.addEventListener("click", async () => {
+  hueLiveStopBtn.disabled = true;
+  try {
+    await fetchJSON("/api/hue/live/stop", { method: "POST" });
+  } catch (e) {
+    alert("Fehler: " + e.message);
+  } finally {
+    refreshHueStatus();
+  }
+});
+
+async function refreshHueEvents() {
+  if (!hueLiveRunning) return;
+  try {
+    const entries = await fetchJSON("/api/hue/events?limit=200");
+    const lines = entries.map((e) => {
+      if (e.kind === "live-event") return `${toLocalTime(e.ts)} [event] ${JSON.stringify(e.event)}`;
+      return `${toLocalTime(e.ts)} [${e.kind}] ${e.note || ""}`;
+    });
+    hueLiveLogEl.textContent = lines.join("\n") || "(noch keine Ereignisse)";
+    hueLiveLogEl.scrollTop = hueLiveLogEl.scrollHeight;
+  } catch (e) {
+    hueLiveLogEl.textContent = "Fehler beim Laden: " + e.message;
+  }
+}
+
+refreshHueStatus();
+setInterval(refreshHueStatus, 3000);
+setInterval(refreshHueEvents, 2000);

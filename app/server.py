@@ -14,6 +14,7 @@ from .ble_client import BleManager
 from .config import AppConfig
 from .devices import DeviceStore
 from .firebase_sync import FirebaseSync
+from .hue_client import HueManager
 from .logging_setup import tail_log_file
 from .state import AppState
 from .storage import Storage, aggregate_points
@@ -26,7 +27,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 def create_app(
     config: AppConfig, state: AppState, storage: Storage, ble: BleManager, devices: DeviceStore,
-    firebase: FirebaseSync, ui_state: UiState,
+    firebase: FirebaseSync, ui_state: UiState, hue: HueManager,
 ) -> Flask:
     app = Flask(__name__, static_folder=None)
 
@@ -275,6 +276,74 @@ def create_app(
         state.rename_device(record.mac, record.name)
         state.set_probe_flag(record.mac, False)
         return jsonify({"ok": True})
+
+    # -- Hue-Bridge (lokale CLIP-v2-API) ------------------------------------------
+
+    @app.get("/api/hue/status")
+    def api_hue_status():
+        return jsonify(hue.snapshot())
+
+    @app.post("/api/hue/probe")
+    def api_hue_probe():
+        payload = request.get_json(force=True, silent=True) or {}
+        ip = (payload.get("bridge_ip") or "").strip()
+        if not ip:
+            return jsonify({"ok": False, "error": "Bridge-IP fehlt"}), 400
+        try:
+            info = hue.probe_bridge(ip)
+            return jsonify({"ok": True, "info": info})
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 502
+
+    @app.post("/api/hue/pair")
+    def api_hue_pair():
+        payload = request.get_json(force=True, silent=True) or {}
+        ip = (payload.get("bridge_ip") or "").strip()
+        if not ip:
+            return jsonify({"ok": False, "error": "Bridge-IP fehlt"}), 400
+        try:
+            result = hue.pair(ip)
+            return jsonify(result)
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 502
+
+    @app.post("/api/hue/forget")
+    def api_hue_forget():
+        hue.forget()
+        return jsonify({"ok": True})
+
+    @app.post("/api/hue/pull-now")
+    def api_hue_pull_now():
+        try:
+            data = hue.pull_now()
+            return jsonify({"ok": True, "data": data})
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 502
+
+    @app.get("/api/hue/data")
+    def api_hue_data():
+        data = hue.get_last_pull()
+        if data is None:
+            return jsonify({"ok": False, "error": "Noch kein Pull durchgefuehrt"}), 404
+        return jsonify({"ok": True, "data": data})
+
+    @app.post("/api/hue/live/start")
+    def api_hue_live_start():
+        try:
+            hue.start_live()
+            return jsonify({"ok": True})
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 400
+
+    @app.post("/api/hue/live/stop")
+    def api_hue_live_stop():
+        hue.stop_live()
+        return jsonify({"ok": True})
+
+    @app.get("/api/hue/events")
+    def api_hue_events():
+        limit = request.args.get("limit", default=200, type=int)
+        return jsonify(hue.get_events(limit=limit))
 
     # -- Export ------------------------------------------------------------------
 
