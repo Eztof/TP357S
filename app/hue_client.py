@@ -53,6 +53,9 @@ class HueManager:
         self.last_pull_data: Optional[dict] = None
         self.last_pull_error: Optional[str] = None
 
+        self.last_probe_error: Optional[str] = None
+        self.last_pair_error: Optional[str] = None
+
         self.live_running = False
         self._live_thread: Optional[threading.Thread] = None
         self._live_stop_event = threading.Event()
@@ -110,6 +113,8 @@ class HueManager:
                 "live_running": self.live_running,
                 "live_event_count": self.live_event_count,
                 "last_live_error": self.last_live_error,
+                "last_probe_error": self.last_probe_error,
+                "last_pair_error": self.last_pair_error,
             }
 
     @staticmethod
@@ -128,9 +133,22 @@ class HueManager:
         application_key. Nuetzlich, um vor dem Koppeln zu pruefen, ob unter
         der eingegebenen IP ueberhaupt eine Hue-Bridge antwortet."""
         url = f"https://{ip}/api/config"
-        resp = requests.get(url, timeout=HTTP_TIMEOUT_SECONDS, verify=False)
-        resp.raise_for_status()
-        return resp.json()
+        self._append_event({"kind": "probe", "note": f"GET {url}"})
+        try:
+            resp = requests.get(url, timeout=HTTP_TIMEOUT_SECONDS, verify=False)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:  # noqa: BLE001
+            message = f"{type(exc).__name__}: {exc}"
+            logger.exception("Hue-Bridge-Probe fehlgeschlagen (ip=%s)", ip)
+            with self._lock:
+                self.last_probe_error = message
+            self._append_event({"kind": "probe-error", "note": message})
+            raise
+        with self._lock:
+            self.last_probe_error = None
+        self._append_event({"kind": "probe-ok", "note": json.dumps(data, ensure_ascii=False)})
+        return data
 
     # -- Pairing -------------------------------------------------------------------
 
@@ -139,11 +157,21 @@ class HueManager:
         der runden Taste auf der Bridge aufgerufen werden, sonst liefert
         die Bridge Fehlercode 101 ('link button not pressed')."""
         url = f"https://{ip}/api"
-        resp = requests.post(
-            url, json=[{"devicetype": PAIR_DEVICETYPE}], timeout=HTTP_TIMEOUT_SECONDS, verify=False
-        )
-        resp.raise_for_status()
-        result = resp.json()
+        self._append_event({"kind": "pair-attempt", "note": f"POST {url} devicetype={PAIR_DEVICETYPE!r}"})
+        try:
+            resp = requests.post(
+                url, json=[{"devicetype": PAIR_DEVICETYPE}], timeout=HTTP_TIMEOUT_SECONDS, verify=False
+            )
+            resp.raise_for_status()
+            result = resp.json()
+        except Exception as exc:  # noqa: BLE001
+            message = f"{type(exc).__name__}: {exc}"
+            logger.exception("Hue-Pairing-Anfrage fehlgeschlagen (ip=%s)", ip)
+            with self._lock:
+                self.last_pair_error = message
+            self._append_event({"kind": "pair-error", "note": message})
+            raise
+        self._append_event({"kind": "pair-response", "note": json.dumps(result, ensure_ascii=False)})
         entry = result[0] if result else {}
         if "success" in entry:
             username = entry["success"]["username"]
@@ -156,13 +184,21 @@ class HueManager:
                 self.bridge_ip = ip
                 self.application_key = username
                 self.bridge_id = bridge_id
+                self.last_pair_error = None
                 self._save()
             logger.info("Hue-Bridge gekoppelt: ip=%s bridge_id=%s", ip, bridge_id)
+            self._append_event({"kind": "pair-success", "note": f"application_key erhalten, bridge_id={bridge_id}"})
             return {"ok": True}
         if "error" in entry:
             message = entry["error"].get("description", "unbekannter Fehler")
             logger.warning("Hue-Pairing fehlgeschlagen: %s", message)
+            with self._lock:
+                self.last_pair_error = message
+            self._append_event({"kind": "pair-error", "note": message})
             return {"ok": False, "error": message}
+        with self._lock:
+            self.last_pair_error = "Unerwartete Antwort der Bridge"
+        self._append_event({"kind": "pair-error", "note": f"Unerwartete Antwort: {result}"})
         return {"ok": False, "error": "Unerwartete Antwort der Bridge"}
 
     def forget(self) -> None:
@@ -173,8 +209,12 @@ class HueManager:
             self.bridge_id = None
             self.last_pull_data = None
             self.last_pull_at = None
+            self.last_pull_error = None
+            self.last_probe_error = None
+            self.last_pair_error = None
             self._save()
         logger.info("Hue-Kopplung aufgehoben")
+        self._append_event({"kind": "info", "note": "Kopplung aufgehoben"})
 
     # -- Einmaliger Pull (CLIP v2, alle Ressourcen in einem Aufruf) -------------
 
@@ -183,19 +223,24 @@ class HueManager:
             raise RuntimeError("Nicht mit einer Hue-Bridge gekoppelt.")
         url = f"https://{self.bridge_ip}/clip/v2/resource"
         headers = {"hue-application-key": self.application_key}
+        self._append_event({"kind": "pull-attempt", "note": f"GET {url}"})
         try:
             resp = requests.get(url, headers=headers, timeout=HTTP_TIMEOUT_SECONDS, verify=False)
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:  # noqa: BLE001
+            message = f"{type(exc).__name__}: {exc}"
+            logger.exception("Hue-Pull fehlgeschlagen (ip=%s)", self.bridge_ip)
             with self._lock:
-                self.last_pull_error = f"{type(exc).__name__}: {exc}"
+                self.last_pull_error = message
+            self._append_event({"kind": "pull-error", "note": message})
             raise
         with self._lock:
             self.last_pull_data = data
             self.last_pull_at = datetime.now(timezone.utc).isoformat()
             self.last_pull_error = None
         logger.info("Hue-Pull erfolgreich: %d Ressourcen", len(data.get("data", [])))
+        self._append_event({"kind": "pull-ok", "note": f"{len(data.get('data', []))} Ressourcen"})
         return data
 
     def get_last_pull(self) -> Optional[dict]:

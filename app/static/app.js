@@ -1063,9 +1063,13 @@ async function refreshHueStatus() {
     hueLiveStartBtn.disabled = !s.paired || s.live_running;
     hueLiveStopBtn.disabled = !s.live_running;
 
-    huePairStatusEl.textContent = s.paired
-      ? `gekoppelt: ${s.bridge_ip} (bridge_id=${s.bridge_id || "?"})`
-      : "nicht gekoppelt";
+    if (!huePairPolling) {
+      huePairStatusEl.textContent = s.paired
+        ? `gekoppelt: ${s.bridge_ip} (bridge_id=${s.bridge_id || "?"})`
+        : s.last_pair_error
+        ? `nicht gekoppelt — letzter Fehler: ${s.last_pair_error}`
+        : "nicht gekoppelt";
+    }
     hueLiveStatusEl.textContent = s.live_running
       ? `läuft — ${s.live_event_count} Ereignis(se) empfangen`
       : s.last_live_error
@@ -1216,7 +1220,10 @@ hueLiveStopBtn.addEventListener("click", async () => {
 });
 
 async function refreshHueEvents() {
-  if (!hueLiveRunning) return;
+  // Bewusst NICHT auf hueLiveRunning beschraenkt: dieses Log zeigt jetzt
+  // alle Hue-Aktionen (Probe/Pairing/Pull/Live), nicht nur den SSE-Stream -
+  // genau die Sichtbarkeit, die beim Debuggen fehlgeschlagener
+  // Kopplungsversuche gefehlt hat.
   try {
     const entries = await fetchJSON("/api/hue/events?limit=200");
     const lines = entries.map((e) => {

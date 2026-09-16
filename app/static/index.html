@@ -176,13 +176,18 @@
 </div>
 
 <div class="panel" data-panel-id="hue-live">
-  <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>Live (Server-Sent Events)</h2></div>
+  <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>Live (Server-Sent Events) + Rohdaten-Log</h2></div>
   <div class="panel-body">
     <div class="row">
       <button id="hue-live-start-btn">Live starten</button>
       <button id="hue-live-stop-btn">Live stoppen</button>
       <span id="hue-live-status" class="small"></span>
     </div>
+    <p class="small">
+      Zeigt JEDE Hue-Aktion roh an (Bridge-Prüfung, Kopplungsversuche samt Antwort der Bridge,
+      Abrufe, Live-Ereignisse) — die zentrale Stelle zum Nachvollziehen, was genau passiert bzw.
+      warum etwas fehlschlägt.
+    </p>
     <pre id="hue-live-log" class="log-box">(noch keine Ereignisse)</pre>
   </div>
 </div>
