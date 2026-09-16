@@ -23,7 +23,9 @@ LOG_FORMAT = "%(asctime)s [%(levelname)s] %(threadName)s %(name)s: %(message)s"
 # hinzufuegen, Verlauf abrufen, ...) bleiben normal sichtbar.
 _NOISY_POLL_PATTERN = re.compile(
     r'"GET (?:/api/status|/api/config|/api/debug|/api/logs(?:\?[^"\s]*)?'
-    r'|/api/devices/[^"\s/]+/(?:live|history|log)(?:\?[^"\s]*)?) HTTP/[^"]+"\s+200'
+    r'|/api/devices/[^"\s/]+/(?:live|history|log|series)(?:\?[^"\s]*)?'
+    r'|/api/firebase/status|/api/hue/status|/api/hue/events(?:\?[^"\s]*)?'
+    r') HTTP/[^"]+"\s+200'
 )
 
 

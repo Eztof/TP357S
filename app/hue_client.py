@@ -159,8 +159,13 @@ class HueManager:
         url = f"https://{ip}/api"
         self._append_event({"kind": "pair-attempt", "note": f"POST {url} devicetype={PAIR_DEVICETYPE!r}"})
         try:
+            # WICHTIG: der Request-Body ist ein einzelnes JSON-Objekt, KEIN
+            # Array (nur die ANTWORT der Bridge ist ein Array) - mit einem
+            # Array als Body liefert die Bridge "body contains invalid json"
+            # zurueck, unabhaengig vom Tastendruck (per echtem Bridge-Test
+            # reproduziert und verifiziert).
             resp = requests.post(
-                url, json=[{"devicetype": PAIR_DEVICETYPE}], timeout=HTTP_TIMEOUT_SECONDS, verify=False
+                url, json={"devicetype": PAIR_DEVICETYPE}, timeout=HTTP_TIMEOUT_SECONDS, verify=False
             )
             resp.raise_for_status()
             result = resp.json()
