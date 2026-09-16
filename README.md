@@ -17,9 +17,10 @@ Jedes Log-/Dump-Fenster hat einen „In Zwischenablage kopieren“-Button
 direkt darüber.
 
 Oben im Dashboard gibt es Reiter: „Sensoren“ (die komplette TP357S-
-Anbindung), „Hue“ (rohe Anbindung an die Philips-Hue-Bridge, siehe unten)
-und „Gebäudeplan“ (Lampen auf einem eigenen Grundriss-Bild platzieren und
-steuern, siehe unten). Jeder Themenblock innerhalb eines Reiters ist
+Anbindung), „Hue“ (rohe Anbindung an die Philips-Hue-Bridge, siehe unten),
+„Gebäudeplan“ (Lampen auf einem eigenen Grundriss-Bild platzieren und
+steuern, siehe unten) und „Alarm“ (Vollbild-Warnung bei Bewegungsmelder-
+Auslösung, siehe unten). Jeder Themenblock innerhalb eines Reiters ist
 einzeln einklappbar (Klick auf die Kopfzeile). Welche Bereiche eingeklappt
 sind und welcher Reiter zuletzt aktiv war, wird **serverseitig** in
 `data/ui_state.json` gespeichert (`GET`/`POST /api/ui-state`) — bleibt
@@ -591,6 +592,27 @@ Hue-Datenstrom im Hue-Reiter.
   trägt selbst keinen Raumnamen, nur eine Geräte-Referenz; welcher Raum sie
   enthält, steht wiederum nur in den `children` der Raum-Ressource. Diese
   Verknüpfung läuft serverseitig, nicht im Browser.
+
+## Alarm (Reiter „Alarm“)
+
+Eigener Reiter nur für eine sehr auffällige Vollbild-Warnung, wenn der
+Bewegungsmelder auslöst — gedacht zum Offenlassen auf einem Zweitbildschirm
+oder Tablet.
+
+- **Anzeige:** Löst der Bewegungsmelder aus (aus demselben SSE-Live-Stream,
+  der auch das Bewegungs-Banner im Gebäudeplan speist — kein doppeltes
+  Polling), blitzt der gesamte Bildschirm für die eingestellte Dauer
+  (Standard 5 s, einstellbar) rot/dunkelrot im Wechsel auf, mit großem Text
+  „BEWEGUNG ERKANNT“. Die Auslösung selbst wird immer erkannt (Reiter-
+  unabhängig, solange der Live-Stream läuft) — sichtbar wird die Warnung
+  aber nur, während der Alarm-Reiter tatsächlich geöffnet ist (genau dafür
+  ist der Reiter da).
+- **Status & Verlauf:** Statuszeile zeigt den zuletzt auslösenden Sensor mit
+  Zeitstempel, eine Tabelle darunter führt die letzten 100 Auslösungen.
+  „Jetzt testen“-Button löst die Warnung manuell aus, ohne auf eine echte
+  Bewegung zu warten.
+- Das Overlay blockiert bewusst keine Klicks (`pointer-events: none`) — die
+  Tab-Leiste bleibt auch während des Aufblitzens bedienbar.
 
 ## Datenschutz / Speicherort
 

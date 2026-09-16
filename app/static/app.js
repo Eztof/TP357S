@@ -123,6 +123,12 @@ function setActiveTab(tab, save) {
   document.querySelectorAll(".tab-content").forEach((c) => c.classList.toggle("active", c.dataset.tab === tab));
   uiState.active_tab = tab;
   if (save) saveUiState();
+  // Alarm-Vollbildanzeige darf NUR sichtbar sein, waehrend der Alarm-Reiter
+  // aktiv ist (der Reiter selbst ist der "Alarm-Bildschirm") - beim
+  // Reiter-Wechsel neu bewerten, unabhaengig davon, ob gerade ein Alarm
+  // laeuft (definiert in der Alarm-Sektion weiter unten, per Hoisting hier
+  // schon aufrufbar).
+  if (typeof updateAlarmVisibility === "function") updateAlarmVisibility();
 }
 
 function initTabs() {
@@ -1094,6 +1100,7 @@ async function refreshHueStatus() {
     const s = await fetchJSON("/api/hue/status");
     hueLiveRunning = !!s.live_running;
     if (motionLiveHintEl) motionLiveHintEl.hidden = hueLiveRunning;
+    if (alarmLiveHintEl) alarmLiveHintEl.hidden = hueLiveRunning;
     if (!hueIpPrefilled && s.bridge_ip) {
       hueIpInput.value = s.bridge_ip;
       hueIpPrefilled = true;
@@ -1717,6 +1724,7 @@ function processMotionEvents(entries) {
       const name = sensor ? sensor.name : item.id;
       motionState[item.id] = { name, motion: !!item.motion.motion, lastTs: e.ts };
       addMotionLogRow(e.ts, name, item.motion.motion);
+      if (item.motion.motion) triggerAlarm(name, e.ts);
       changed = true;
     });
     lastMotionEventTs = e.ts;
@@ -1729,3 +1737,54 @@ function processMotionEvents(entries) {
 
 refreshFloorplan();
 setInterval(refreshFloorplan, 5000);
+
+// -- Alarm (Vollbild-Warnung bei Bewegungsmelder-Ausloesung) -----------------
+
+const alarmFullscreenFlashEl = document.getElementById("alarm-fullscreen-flash");
+const alarmDurationInput = document.getElementById("alarm-duration");
+const alarmTestBtn = document.getElementById("alarm-test-btn");
+const alarmStatusEl = document.getElementById("alarm-status");
+const alarmLiveHintEl = document.getElementById("alarm-live-hint");
+const alarmStartLiveBtn = document.getElementById("alarm-start-live-btn");
+const alarmLogBodyEl = document.getElementById("alarm-log-body");
+
+let alarmActive = false;
+let alarmTimeout = null;
+
+function updateAlarmVisibility() {
+  const alarmBtn = document.querySelector('.tab-btn[data-tab="alarm"]');
+  const onAlarmTab = !!alarmBtn && alarmBtn.classList.contains("active");
+  alarmFullscreenFlashEl.classList.toggle("active", alarmActive && onAlarmTab);
+}
+
+function triggerAlarm(sensorName, ts) {
+  alarmActive = true;
+  updateAlarmVisibility();
+  alarmStatusEl.textContent = `Ausgelöst: ${sensorName} um ${toLocalTime(ts)}`;
+  addAlarmLogRow(ts, sensorName);
+  clearTimeout(alarmTimeout);
+  const durationMs = Math.max(1, parseInt(alarmDurationInput.value, 10) || 5) * 1000;
+  alarmTimeout = setTimeout(() => {
+    alarmActive = false;
+    updateAlarmVisibility();
+  }, durationMs);
+}
+
+function addAlarmLogRow(ts, name) {
+  const tr = document.createElement("tr");
+  tr.innerHTML = `<td>${toLocalTime(ts)}</td><td>${escapeHtml(name)}</td>`;
+  alarmLogBodyEl.insertBefore(tr, alarmLogBodyEl.firstChild);
+  while (alarmLogBodyEl.children.length > 100) alarmLogBodyEl.removeChild(alarmLogBodyEl.lastChild);
+}
+
+alarmTestBtn.addEventListener("click", () => {
+  triggerAlarm("Test", new Date().toISOString());
+});
+
+alarmStartLiveBtn.addEventListener("click", async () => {
+  try {
+    await fetchJSON("/api/hue/live/start", { method: "POST" });
+  } catch (e) {
+    alert("Live-Start fehlgeschlagen: " + e.message);
+  }
+});

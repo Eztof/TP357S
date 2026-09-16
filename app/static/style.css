@@ -420,3 +420,35 @@ svg.chart .chart-selection {
   border-bottom: 1px solid #ddd;
   padding-bottom: 0.3rem;
 }
+
+/* -- Alarm (Vollbild-Warnung bei Bewegungsmelder-Ausloesung) -------------- */
+
+.alarm-fullscreen-flash {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  align-items: center;
+  justify-content: center;
+  animation: alarm-flash-bg 0.4s steps(2, start) infinite;
+  pointer-events: none;
+}
+
+.alarm-fullscreen-flash.active {
+  display: flex;
+}
+
+.alarm-fullscreen-text {
+  color: #fff;
+  font-family: inherit;
+  font-size: 4rem;
+  font-weight: bold;
+  text-align: center;
+  text-shadow: 0 0 12px #000;
+  padding: 1rem;
+}
+
+@keyframes alarm-flash-bg {
+  0%, 100% { background: #ff0000; }
+  50% { background: #7a0000; }
+}

@@ -13,6 +13,11 @@
   <button class="tab-btn" data-tab="sensors" type="button">Sensoren</button>
   <button class="tab-btn" data-tab="hue" type="button">Hue</button>
   <button class="tab-btn" data-tab="floorplan" type="button">Gebäudeplan</button>
+  <button class="tab-btn" data-tab="alarm" type="button">Alarm</button>
+</div>
+
+<div id="alarm-fullscreen-flash" class="alarm-fullscreen-flash">
+  <div class="alarm-fullscreen-text">BEWEGUNG ERKANNT</div>
 </div>
 
 <div class="tab-content" data-tab="sensors">
@@ -273,6 +278,40 @@
   <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>Räume / Zonen</h2></div>
   <div class="panel-body">
     <div id="zone-list"></div>
+  </div>
+</div>
+
+</div>
+
+<div class="tab-content" data-tab="alarm">
+
+<div class="panel" data-panel-id="alarm-settings">
+  <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>Alarm-Einstellungen</h2></div>
+  <div class="panel-body">
+    <p class="small">
+      Löst irgendein Bewegungsmelder aus, leuchtet der GESAMTE Bildschirm rot auf — aber nur,
+      solange dieser Reiter geöffnet ist (dafür ist er da: als eigener Alarm-Bildschirm, z.B. auf
+      einem zweiten Monitor/Tablet offen lassen).
+    </p>
+    <div class="row">
+      <label>Dauer (Sekunden): <input id="alarm-duration" type="number" value="5" min="1" max="60" /></label>
+      <button id="alarm-test-btn" type="button">Jetzt testen</button>
+      <span id="alarm-status" class="small">Warte auf Bewegung…</span>
+    </div>
+    <p id="alarm-live-hint" class="small" hidden>
+      Live-Stream läuft nicht — <button id="alarm-start-live-btn" type="button">jetzt starten</button>,
+      damit Bewegungen ankommen.
+    </p>
+  </div>
+</div>
+
+<div class="panel" data-panel-id="alarm-log">
+  <div class="panel-header"><button class="panel-toggle" type="button">▾</button><h2>Auslöse-Verlauf</h2></div>
+  <div class="panel-body">
+    <table id="alarm-log-table">
+      <thead><tr><th>Zeit</th><th>Sensor</th></tr></thead>
+      <tbody id="alarm-log-body"></tbody>
+    </table>
   </div>
 </div>
 
