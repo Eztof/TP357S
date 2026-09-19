@@ -126,7 +126,7 @@ def setup_worker_logging(log_queue, level: str = "DEBUG") -> None:
     _install_crash_hooks()
 
 
-def tail_log_file(log_path: Path, max_lines: int = 300) -> str:
+def tail_log_file(log_path: Path, max_lines: int = 5000) -> str:
     if not log_path.exists():
         return "(noch keine Logdatei vorhanden)"
     try:

@@ -85,7 +85,7 @@ def create_app(
 
     @app.get("/api/logs")
     def api_logs():
-        lines = request.args.get("lines", default=300, type=int)
+        lines = request.args.get("lines", default=5000, type=int)
         text = tail_log_file(config.log_path, max_lines=lines)
         return Response(text, mimetype="text/plain")
 

@@ -216,7 +216,7 @@ async function refreshDebug() {
 
 async function refreshLog() {
   try {
-    const lines = parseInt(logLinesInput.value, 10) || 300;
+    const lines = parseInt(logLinesInput.value, 10) || 5000;
     const res = await fetch(`/api/logs?lines=${lines}`);
     const text = await res.text();
     logViewEl.textContent = text;
