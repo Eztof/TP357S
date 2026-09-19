@@ -671,7 +671,19 @@ async function buildTimeCandidate(prefixInput, hexInput) {
 
 // -- Verlauf --------------------------------------------------------------------
 
+let historyDeviceOptionsKey = null;
+
 function updateHistoryDeviceOptions(devices) {
+  // Absichtlich NUR bei tatsaechlich geaenderter Geraeteliste neu aufbauen:
+  // historyDeviceSelect.innerHTML wird bei jedem refreshAll()-Poll (alle 2s)
+  // aufgerufen. Ein Rebuild waehrend das native <select>-Dropdown geoeffnet
+  // ist, schliesst es im Browser sofort wieder zu - der Nutzer konnte dann
+  // nie einen Sensor auswaehlen, weil das Poll-Intervall jedem Klickversuch
+  // zuvorkam.
+  const key = devices.map((d) => d.mac).join("|");
+  if (key === historyDeviceOptionsKey) return;
+  historyDeviceOptionsKey = key;
+
   const previous = historyDeviceSelect.value;
   historyDeviceSelect.innerHTML = "";
   devices.forEach((d) => {
