@@ -534,8 +534,8 @@ function updateDeviceLogPanels(devices) {
 
       const pre = document.createElement("pre");
       pre.className = "log-box small";
-      attachCopyButton(pre);
       container.appendChild(pre);
+      attachCopyButton(pre);
       deviceLogsEl.appendChild(container);
 
       const intervalId = setInterval(() => fetchDeviceLog(d.mac, pre), 2000);
