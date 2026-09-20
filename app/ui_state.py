@@ -21,6 +21,7 @@ class UiState:
         self._lock = threading.Lock()
         self._collapsed: Dict[str, bool] = {}
         self._active_tab: str = DEFAULT_TAB
+        self._dark_mode: bool = False
         self._load()
 
     def _load(self) -> None:
@@ -35,6 +36,9 @@ class UiState:
             active_tab = raw.get("active_tab")
             if isinstance(active_tab, str) and active_tab:
                 self._active_tab = active_tab
+            dark_mode = raw.get("dark_mode")
+            if isinstance(dark_mode, bool):
+                self._dark_mode = dark_mode
         except Exception:  # noqa: BLE001
             logger.exception("UI-Zustand (%s) konnte nicht geladen werden, verwende Defaults", self.path)
 
@@ -43,20 +47,28 @@ class UiState:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".tmp")
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump({"collapsed": self._collapsed, "active_tab": self._active_tab}, f, indent=2)
+                json.dump(
+                    {"collapsed": self._collapsed, "active_tab": self._active_tab, "dark_mode": self._dark_mode},
+                    f,
+                    indent=2,
+                )
             tmp.replace(self.path)
         except Exception:  # noqa: BLE001
             logger.exception("UI-Zustand (%s) konnte nicht gespeichert werden", self.path)
 
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
-            return {"collapsed": dict(self._collapsed), "active_tab": self._active_tab}
+            return {"collapsed": dict(self._collapsed), "active_tab": self._active_tab, "dark_mode": self._dark_mode}
 
-    def update(self, *, collapsed: Dict[str, bool] = None, active_tab: str = None) -> None:
+    def update(
+        self, *, collapsed: Dict[str, bool] = None, active_tab: str = None, dark_mode: bool = None
+    ) -> None:
         with self._lock:
             if collapsed:
                 for panel_id, value in collapsed.items():
                     self._collapsed[str(panel_id)] = bool(value)
             if active_tab:
                 self._active_tab = str(active_tab)
+            if dark_mode is not None:
+                self._dark_mode = bool(dark_mode)
             self._save()

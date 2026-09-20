@@ -1,3 +1,63 @@
+:root {
+  color-scheme: light;
+  --bg: #ffffff;
+  --fg: #000000;
+  --border: #999999;
+  --border-light: #cccccc;
+  --border-lighter: #dddddd;
+  --panel-header-bg: #f0f0f0;
+  --tab-btn-bg: #eeeeee;
+  --input-bg: #ffffff;
+  --input-fg: #000000;
+  --link: #0000ee;
+  --error: #b00000;
+  --pre-bg: #f4f4f4;
+  --table-header-bg: #eeeeee;
+  --chart-bg: #fafafa;
+  --chart-plot-bg: #ffffff;
+  --chart-grid-line: #e5e5e5;
+  --chart-axis-label: #666666;
+  --chart-hover-line: #aaaaaa;
+  --chart-hover-dot-stroke: #ffffff;
+  --chart-hover-text: #111111;
+  --chart-hover-text-bg: #ffffff;
+  --floorplan-canvas-bg: #eeeeee;
+  --floorplan-icon-bg: rgba(255, 255, 255, 0.85);
+  --motion-idle-bg: #f4f4f4;
+  --motion-idle-fg: #555555;
+  --motion-active-bg: #ffdddd;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1a1a1a;
+  --fg: #e0e0e0;
+  --border: #555555;
+  --border-light: #444444;
+  --border-lighter: #3a3a3a;
+  --panel-header-bg: #262626;
+  --tab-btn-bg: #262626;
+  --input-bg: #2a2a2a;
+  --input-fg: #e0e0e0;
+  --link: #6ea8fe;
+  --error: #ff6b6b;
+  --pre-bg: #222222;
+  --table-header-bg: #262626;
+  --chart-bg: #202020;
+  --chart-plot-bg: #1a1a1a;
+  --chart-grid-line: #333333;
+  --chart-axis-label: #999999;
+  --chart-hover-line: #777777;
+  --chart-hover-dot-stroke: #1a1a1a;
+  --chart-hover-text: #e0e0e0;
+  --chart-hover-text-bg: #2a2a2a;
+  --floorplan-canvas-bg: #262626;
+  --floorplan-icon-bg: rgba(40, 40, 40, 0.85);
+  --motion-idle-bg: #262626;
+  --motion-idle-fg: #aaaaaa;
+  --motion-active-bg: #4a1010;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -8,8 +68,8 @@ body {
   font-family: ui-monospace, "Cascadia Mono", "Consolas", "DejaVu Sans Mono", monospace;
   font-size: 13px;
   line-height: 1.35;
-  background: #ffffff;
-  color: #000000;
+  background: var(--bg);
+  color: var(--fg);
 }
 
 h1 {
@@ -36,13 +96,38 @@ section {
   margin-bottom: 1rem;
 }
 
+/* -- Kopfbereich (Titel + Dark-Mode-Umschalter) -------------------------- */
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.page-header h1 {
+  margin: 0;
+}
+
+.dark-mode-toggle {
+  font-family: inherit;
+  font-size: inherit;
+  padding: 3px 10px;
+  cursor: pointer;
+  background: var(--tab-btn-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
 /* -- Tabs -------------------------------------------------------------- */
 
 .tabs {
   display: flex;
   gap: 2px;
   margin-bottom: 0.5rem;
-  border-bottom: 1px solid #000;
+  border-bottom: 1px solid var(--fg);
 }
 
 .tab-btn {
@@ -50,8 +135,9 @@ section {
   font-size: inherit;
   padding: 4px 12px;
   cursor: pointer;
-  background: #eee;
-  border: 1px solid #999;
+  background: var(--tab-btn-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
   border-bottom: none;
   border-radius: 4px 4px 0 0;
   position: relative;
@@ -59,8 +145,8 @@ section {
 }
 
 .tab-btn.active {
-  background: #fff;
-  border-bottom: 1px solid #fff;
+  background: var(--bg);
+  border-bottom: 1px solid var(--bg);
   font-weight: bold;
 }
 
@@ -76,7 +162,7 @@ section {
 
 .panel {
   margin-bottom: 0.6rem;
-  border: 1px solid #ccc;
+  border: 1px solid var(--border-light);
   border-radius: 4px;
 }
 
@@ -85,8 +171,8 @@ section {
   align-items: center;
   gap: 0.4rem;
   padding: 0.25rem 0.5rem;
-  background: #f0f0f0;
-  border-bottom: 1px solid #ccc;
+  background: var(--panel-header-bg);
+  border-bottom: 1px solid var(--border-light);
   cursor: pointer;
   user-select: none;
 }
@@ -102,6 +188,7 @@ section {
 .panel-toggle {
   font-family: inherit;
   background: none;
+  color: var(--fg);
   border: none;
   cursor: pointer;
   padding: 0 2px;
@@ -138,6 +225,9 @@ input, select {
   font-family: inherit;
   font-size: inherit;
   padding: 1px 3px;
+  background: var(--input-bg);
+  color: var(--input-fg);
+  border: 1px solid var(--border);
 }
 
 input[type="number"] {
@@ -150,6 +240,9 @@ button {
   padding: 2px 6px;
   margin-right: 2px;
   cursor: pointer;
+  background: var(--tab-btn-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
 }
 
 button:disabled {
@@ -158,7 +251,7 @@ button:disabled {
 }
 
 a {
-  color: #0000ee;
+  color: var(--link);
 }
 
 table {
@@ -169,14 +262,14 @@ table {
 }
 
 th, td {
-  border: 1px solid #999;
+  border: 1px solid var(--border);
   padding: 2px 4px;
   text-align: left;
   vertical-align: top;
 }
 
 th {
-  background: #eee;
+  background: var(--table-header-bg);
 }
 
 .mono {
@@ -188,7 +281,7 @@ th {
 }
 
 .error {
-  color: #b00000;
+  color: var(--error);
   font-weight: bold;
 }
 
@@ -199,8 +292,9 @@ th {
 pre {
   margin: 0 0 0.5rem 0;
   padding: 0.4rem;
-  background: #f4f4f4;
-  border: 1px solid #999;
+  background: var(--pre-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
   white-space: pre-wrap;
   word-break: break-all;
   font-size: 11px;
@@ -233,23 +327,23 @@ pre {
 svg.chart {
   width: 100%;
   height: 260px;
-  background: #fafafa;
-  border: 1px solid #ccc;
+  background: var(--chart-bg);
+  border: 1px solid var(--border-light);
   border-radius: 6px;
   display: block;
 }
 
 svg.chart .chart-plot-bg {
-  fill: #ffffff;
+  fill: var(--chart-plot-bg);
 }
 
 svg.chart .grid-line {
-  stroke: #e5e5e5;
+  stroke: var(--chart-grid-line);
   stroke-width: 1;
 }
 
 svg.chart .axis-label {
-  fill: #666;
+  fill: var(--chart-axis-label);
   font-size: 10px;
   font-family: inherit;
 }
@@ -262,25 +356,25 @@ svg.chart .series-line {
 }
 
 svg.chart .hover-line {
-  stroke: #aaa;
+  stroke: var(--chart-hover-line);
   stroke-width: 1;
   stroke-dasharray: 3 2;
 }
 
 svg.chart .hover-dot {
-  stroke: #fff;
+  stroke: var(--chart-hover-dot-stroke);
   stroke-width: 1.5;
 }
 
 svg.chart .hover-text {
   font-size: 11px;
   font-family: inherit;
-  fill: #111;
+  fill: var(--chart-hover-text);
 }
 
 svg.chart .hover-text-bg {
-  fill: #fff;
-  stroke: #999;
+  fill: var(--chart-hover-text-bg);
+  stroke: var(--border);
   stroke-width: 1;
 }
 
@@ -302,8 +396,8 @@ svg.chart .chart-selection {
   position: relative;
   flex: 1 1 auto;
   min-width: 300px;
-  border: 1px solid #999;
-  background: #eee;
+  border: 1px solid var(--border);
+  background: var(--floorplan-canvas-bg);
 }
 
 .floorplan-image {
@@ -330,8 +424,9 @@ svg.chart .chart-selection {
   user-select: none;
   padding: 2px 4px;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.85);
-  border: 1px solid #999;
+  background: var(--floorplan-icon-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
 }
 
 .floorplan-icon.selected {
@@ -339,7 +434,7 @@ svg.chart .chart-selection {
 }
 
 .floorplan-icon.motion-active {
-  border: 2px solid #b00000;
+  border: 2px solid var(--error);
   animation: floorplan-motion-pulse 1s ease-in-out infinite;
 }
 
@@ -376,7 +471,7 @@ svg.chart .chart-selection {
 
 .floorplan-sidebar {
   flex: 0 0 160px;
-  border: 1px solid #ccc;
+  border: 1px solid var(--border-light);
   padding: 0.4rem;
   max-height: 400px;
   overflow-y: auto;
@@ -392,7 +487,7 @@ svg.chart .chart-selection {
   gap: 0.3rem;
   padding: 2px;
   margin-bottom: 2px;
-  border: 1px dashed #999;
+  border: 1px dashed var(--border);
   cursor: grab;
   font-size: 11px;
 }
@@ -402,26 +497,28 @@ svg.chart .chart-selection {
   margin-bottom: 0.5rem;
   font-weight: bold;
   text-align: center;
-  border: 1px solid #999;
+  border: 1px solid var(--border);
 }
 
 .motion-banner.motion-idle {
-  background: #f4f4f4;
-  color: #555;
+  background: var(--motion-idle-bg);
+  color: var(--motion-idle-fg);
 }
 
 .motion-banner.motion-active {
-  background: #ffdddd;
-  color: #b00000;
+  background: var(--motion-active-bg);
+  color: var(--error);
   animation: floorplan-motion-pulse 1s ease-in-out infinite;
 }
 
 .zone-row {
-  border-bottom: 1px solid #ddd;
+  border-bottom: 1px solid var(--border-lighter);
   padding-bottom: 0.3rem;
 }
 
 /* -- Alarm (Vollbild-Warnung bei Bewegungsmelder-Ausloesung) -------------- */
+/* Bewusst OHNE Theme-Variablen: die Warnfarben (grell rot) sollen in Hell
+   wie Dunkel gleich stark wirken - das ist der ganze Zweck der Funktion. */
 
 .alarm-fullscreen-flash {
   display: none;

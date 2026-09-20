@@ -85,8 +85,20 @@ function toLocalTime(isoUtc) {
 // Server statt localStorage, weil die Anforderung war "fuer den naechsten
 // Start des SERVERS gespeichert", nicht nur im selben Browser.
 
-const uiState = { collapsed: {}, active_tab: "sensors" };
+const uiState = { collapsed: {}, active_tab: "sensors", dark_mode: false };
 let uiStateSaveTimer = null;
+const darkModeToggleBtn = document.getElementById("dark-mode-toggle");
+
+function applyDarkMode(enabled) {
+  document.documentElement.setAttribute("data-theme", enabled ? "dark" : "light");
+  darkModeToggleBtn.textContent = enabled ? "☀️ Hell" : "🌙 Dark";
+}
+
+darkModeToggleBtn.addEventListener("click", () => {
+  uiState.dark_mode = !uiState.dark_mode;
+  applyDarkMode(uiState.dark_mode);
+  saveUiState();
+});
 
 function saveUiState() {
   clearTimeout(uiStateSaveTimer);
@@ -142,6 +154,7 @@ async function loadUiState() {
     const s = await fetchJSON("/api/ui-state");
     uiState.collapsed = s.collapsed || {};
     uiState.active_tab = s.active_tab || "sensors";
+    uiState.dark_mode = !!s.dark_mode;
   } catch (e) {
     // Server evtl. noch nicht bereit - mit Defaults weitermachen
   }
@@ -149,6 +162,7 @@ async function loadUiState() {
     applyPanelCollapsed(panel, !!uiState.collapsed[panel.dataset.panelId]);
   });
   setActiveTab(uiState.active_tab, false);
+  applyDarkMode(uiState.dark_mode);
 }
 
 initPanels();

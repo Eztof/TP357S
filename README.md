@@ -27,6 +27,13 @@ sind und welcher Reiter zuletzt aktiv war, wird **serverseitig** in
 also auch nach einem Neustart des Servers erhalten, nicht nur im selben
 Browser.
 
+Oben rechts schaltet „🌙 Dark“/„☀️ Hell“ zwischen hellem und dunklem
+Design um — rein optisch (CSS-Variablen in `style.css`, per
+`data-theme`-Attribut auf `<html>`), keine Funktion ändert sich. Die
+Wahl wird genauso wie die Reiter/Panels serverseitig in `ui_state.json`
+gespeichert und bleibt daher auch nach einem Neustart erhalten. Die
+Alarm-Vollbildwarnung bleibt bewusst in beiden Designs gleich grell rot.
+
 ## Ordnerstruktur
 
 ```

@@ -77,9 +77,11 @@ def create_app(
         payload = request.get_json(force=True, silent=True) or {}
         collapsed = payload.get("collapsed")
         active_tab = payload.get("active_tab")
+        dark_mode = payload.get("dark_mode")
         ui_state.update(
             collapsed=collapsed if isinstance(collapsed, dict) else None,
             active_tab=active_tab if isinstance(active_tab, str) else None,
+            dark_mode=dark_mode if isinstance(dark_mode, bool) else None,
         )
         return jsonify({"ok": True})
 
